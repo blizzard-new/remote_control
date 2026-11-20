@@ -1,6 +1,5 @@
 package org.remotecontrol.share;
 
-import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -58,20 +57,33 @@ final class AvcFrames {
 
     /** Android AVC implementations may return either start codes or native NAL length fields. */
     static byte[] annexB(byte[] input) {
-        if (input.length == 0 || (input.length >= 3 && input[0] == 0 && input[1] == 0
-                && (input[2] == 1 || (input.length >= 4 && input[2] == 0 && input[3] == 1)))) return input;
-        ByteArrayOutputStream converted = new ByteArrayOutputStream(input.length + 4);
-        for (int offset = 0; offset < input.length;) {
-            if (input.length - offset < 4) return singleNal(input);
-            int length = ((input[offset] & 255) << 24) | ((input[offset + 1] & 255) << 16)
-                    | ((input[offset + 2] & 255) << 8) | (input[offset + 3] & 255);
-            offset += 4;
-            if (length <= 0 || length > input.length - offset) return singleNal(input);
-            converted.write(0); converted.write(0); converted.write(0); converted.write(1);
-            converted.write(input, offset, length);
-            offset += length;
+        if (input.length == 0) return input;
+        // Validate every NAL boundary before rewriting. A 0x000001xx length
+        // can otherwise be mistaken for a three-byte Annex B start code.
+        int offset = 0;
+        while (input.length - offset >= 5) {
+            int length = lengthAt(input, offset);
+            if (length <= 0 || length > input.length - offset - 4) break;
+            offset += 4 + length;
         }
-        return converted.toByteArray();
+        if (offset == input.length) {
+            byte[] out = input.clone();
+            for (int i = 0; i < out.length;) {
+                int length = lengthAt(input, i);
+                out[i] = out[i + 1] = out[i + 2] = 0;
+                out[i + 3] = 1;
+                i += 4 + length;
+            }
+            return out;
+        }
+        if (input.length >= 3 && input[0] == 0 && input[1] == 0
+                && (input[2] == 1 || (input.length >= 4 && input[2] == 0 && input[3] == 1))) return input;
+        return singleNal(input);
+    }
+
+    private static int lengthAt(byte[] input, int offset) {
+        return ((input[offset] & 255) << 24) | ((input[offset + 1] & 255) << 16)
+                | ((input[offset + 2] & 255) << 8) | (input[offset + 3] & 255);
     }
 
     private static byte[] singleNal(byte[] unit) {

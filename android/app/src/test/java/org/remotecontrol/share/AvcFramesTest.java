@@ -42,5 +42,10 @@ public class AvcFramesTest {
         assertArrayEquals(expected, AvcFrames.annexB(prefixed));
         assertArrayEquals(new byte[]{0,0,0,1,0x68}, AvcFrames.annexB(new byte[]{0x68}));
         assertArrayEquals(expected, AvcFrames.annexB(expected));
+        byte[] delta = new byte[4 + 300];
+        delta[2] = 1;
+        delta[3] = 44;
+        delta[4] = 0x41;
+        assertEquals(1, AvcFrames.annexB(delta)[3]);
     }
 }
