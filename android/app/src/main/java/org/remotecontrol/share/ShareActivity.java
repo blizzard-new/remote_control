@@ -19,6 +19,7 @@ import android.widget.TextView;
 
 public final class ShareActivity extends Activity {
     private static final int SHARE = 1;
+    private static final int NOTIFICATIONS = 2;
     private final Handler main = new Handler(Looper.getMainLooper());
     private TextView details;
     private Button start, stop;
@@ -36,10 +37,19 @@ public final class ShareActivity extends Activity {
         int padding = (int) (24 * getResources().getDisplayMetrics().density);
         page.setPadding(padding, padding * 2, padding, padding);
         TextView title = new TextView(this);
-        title.setText("分享 Android 螢幕");
+        title.setText("遠端螢幕");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         page.addView(title);
+        Button viewer = new Button(this);
+        viewer.setText("連接電腦（鍵盤觸控板模式）");
+        viewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class)));
+        page.addView(viewer);
+        TextView shareHeading = new TextView(this);
+        shareHeading.setText("分享 Android 螢幕");
+        shareHeading.setTextSize(20);
+        shareHeading.setPadding(0, padding, 0, 0);
+        page.addView(shareHeading);
         details = new TextView(this);
         details.setTextSize(17);
         details.setTextIsSelectable(true);
@@ -54,8 +64,12 @@ public final class ShareActivity extends Activity {
         start.setOnClickListener(v -> {
             prompting = true;
             start.setEnabled(false);
-            MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
-            startActivityForResult(manager.createScreenCaptureIntent(), SHARE);
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    && !getPreferences(MODE_PRIVATE).getBoolean("askedNotifications", false)) {
+                getPreferences(MODE_PRIVATE).edit().putBoolean("askedNotifications", true).apply();
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATIONS);
+            } else askProjection();
         });
         page.addView(start);
         stop = new Button(this);
@@ -64,11 +78,16 @@ public final class ShareActivity extends Activity {
         page.addView(stop);
         scroll.addView(page);
         setContentView(scroll);
-        if (savedState == null && Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
-        }
+    }
+
+    private void askProjection() {
+        MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
+        startActivityForResult(manager.createScreenCaptureIntent(), SHARE);
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request == NOTIFICATIONS && prompting) askProjection();
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {

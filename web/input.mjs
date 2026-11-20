@@ -165,6 +165,28 @@ export function attachInput(video, send) {
   video.addEventListener('contextmenu', event => {
     if (position(event)) event.preventDefault();
   }, options);
+  // The Android viewer intercepts ACTION_SCROLL before WebView handles it.
+  // Returning false lets WebView deliver the original event exactly once.
+  function androidWheel(xFraction, yFraction, dxFraction, dyFraction) {
+    if (cleanup.signal.aborted || doc.hidden) return false;
+    if (![xFraction, yFraction, dxFraction, dyFraction].every(Number.isFinite)) return false;
+    if (xFraction < 0 || xFraction > 1 || yFraction < 0 || yFraction > 1) return false;
+    const viewport = win.visualViewport;
+    const width = viewport?.width ?? win.innerWidth;
+    const height = viewport?.height ?? win.innerHeight;
+    if (!(width > 0 && height > 0)) return false;
+    const clientX = (viewport?.offsetLeft ?? 0) + xFraction * width;
+    const clientY = (viewport?.offsetTop ?? 0) + yFraction * height;
+    if (doc.elementFromPoint(clientX, clientY) !== video) return false;
+    const point = screenPoint(pictureBounds(video), clientX, clientY);
+    const dx = dxFraction * width;
+    const dy = dyFraction * height;
+    if (!point || !Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return false;
+    send({ kind: 'wheel', dx, dy, ...point });
+    return true;
+  }
+  win.remoteControlAndroidWheel = androidWheel;
+
   video.addEventListener('wheel', event => {
     const bounds = pictureBounds(video);
     const point = screenPoint(bounds, event.clientX, event.clientY);
@@ -202,6 +224,7 @@ export function attachInput(video, send) {
   return () => {
     if (cleanup.signal.aborted) return;
     cleanup.abort();
+    if (win.remoteControlAndroidWheel === androidWheel) delete win.remoteControlAndroidWheel;
     reset();
     video.style.touchAction = previousTouchAction;
     if (previousTabIndex === null) video.removeAttribute('tabindex');

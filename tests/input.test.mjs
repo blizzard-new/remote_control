@@ -112,3 +112,33 @@ test('loss of focus, visibility, capture and authorization release inputs', () =
   assert.deepEqual(sent.slice(-3), Array(3).fill({ kind: 'release' }));
   assert.equal(video.style.touchAction, '');
 });
+
+test('Android native scroll is consumed only on the authorized picture and preserves fractional axes', () => {
+  const { doc, video, sent, stop } = setup();
+  const win = doc.defaultView;
+  win.innerWidth = 400;
+  win.innerHeight = 400;
+  doc.elementFromPoint = () => video;
+  const wheel = win.remoteControlAndroidWheel;
+  assert.equal(wheel(0.25, 0.5, -0.25 / 400, 0.75 / 400), true);
+  assert.deepEqual(sent.pop(), { kind: 'wheel', dx: -0.25, dy: 0.75, x: 0.25, y: 0.5 });
+  assert.equal(wheel(0.25, 0.05, 0, 0.5), false); // letterbox
+  assert.equal(wheel(1.1, 0.5, 1, 0), false);
+  assert.equal(wheel(0.25, 0.5, NaN, 0.5), false);
+  assert.equal(wheel(0.25, 0.5, 0, 0), false);
+
+  win.visualViewport = { width: 200, height: 200, offsetLeft: 50, offsetTop: 100 };
+  doc.elementFromPoint = (x, y) => x === 150 && y === 200 ? video : null;
+  assert.equal(wheel(0.5, 0.5, 0.5 / 200, -0.25 / 200), true);
+  assert.deepEqual(sent.pop(), { kind: 'wheel', dx: 0.5, dy: -0.25, x: 0.375, y: 0.5 });
+  doc.elementFromPoint = () => ({}); // Overlay owns the event.
+  assert.equal(wheel(0.5, 0.5, 1, 1), false);
+  doc.elementFromPoint = () => video;
+  doc.hidden = true;
+  assert.equal(wheel(0.5, 0.5, 1, 1), false);
+  assert.deepEqual(sent, []);
+  stop();
+  assert.equal(win.remoteControlAndroidWheel, undefined);
+  doc.hidden = false;
+  assert.equal(wheel(0.5, 0.5, 1, 1), false);
+});

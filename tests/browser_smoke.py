@@ -147,8 +147,28 @@ class BrowserSmoke(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(wheel["x"], 0.5, delta=0.01)
             self.assertAlmostEqual(wheel["y"], 0.5, delta=0.01)
 
+            # The Android wrapper bypasses DOM wheel only when this hook accepts
+            # the hardware event. A viewer without control has no such hook.
+            await controller.bring_to_front()
+            await controller.locator("#screen").scroll_into_view_if_needed()
+            accepted = await controller.locator("#screen").evaluate("""v => {
+              const rect = v.getBoundingClientRect();
+              const port = window.visualViewport;
+              return window.remoteControlAndroidWheel(
+                (rect.left + rect.width / 2 - port.offsetLeft) / port.width,
+                (rect.top + rect.height / 2 - port.offsetTop) / port.height,
+                0.125 / port.width, -1.5 / port.height
+              );
+            }""")
+            self.assertTrue(accepted)
+            hardware_wheel = await asyncio.wait_for(desktop.wheel.get(), timeout=5)
+            self.assertAlmostEqual(hardware_wheel["dx"], 0.125)
+            self.assertAlmostEqual(hardware_wheel["dy"], -1.5)
+            self.assertTrue(await observer.evaluate("window.remoteControlAndroidWheel === undefined"))
+
             await row.get_by_role("button", name="中斷連線").click()
             await expect(controller.locator("#session")).to_be_hidden()
+            self.assertTrue(await controller.evaluate("window.remoteControlAndroidWheel === undefined"))
             await asyncio.wait_for(desktop.released.wait(), timeout=5)
             await expect(host.locator("#count")).to_have_text("1")
             await expect(observer.locator("#session")).to_be_visible()

@@ -41,6 +41,8 @@ class WindowsCurtainTests(unittest.TestCase):
         self.visible = _function(user, "IsWindowVisible", wt.BOOL, wt.HWND)
         self.affinity = _function(user, "GetWindowDisplayAffinity", wt.BOOL, wt.HWND, ct.POINTER(wt.DWORD))
         self.rect = _function(user, "GetWindowRect", wt.BOOL, wt.HWND, ct.POINTER(wt.RECT))
+        self.get_window = _function(user, "GetWindow", wt.HWND, wt.HWND, wt.UINT)
+        self.ancestor = _function(user, "GetAncestor", wt.HWND, wt.HWND, wt.UINT)
         if self.find(None, "Remote Control Privacy"):
             self.skipTest("another privacy curtain is already present")
         self.addCleanup(self.host.set_privacy, False)
@@ -105,6 +107,15 @@ class WindowsCurtainTests(unittest.TestCase):
             self.assertTrue(self.host.privacy_enabled)
             marker.configure(bg="#36b8d4")
             marker.update()
+            # Prevent a false pass if the test window is physically above the
+            # curtain. Walk down the top-level Z order to find the marker.
+            marker_root = self.ancestor(marker.winfo_id(), 2)  # GA_ROOT
+            window = self.find(None, "Remote Control Privacy")
+            seen = set()
+            while window and window not in seen and window != marker_root:
+                seen.add(window)
+                window = self.get_window(window, 2)  # GW_HWNDNEXT
+            self.assertTrue(marker_root and window == marker_root, "test marker was not behind the curtain")
             ok, detail = sample("36b8d4")
             self.assertTrue(ok, detail)
         finally:
