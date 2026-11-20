@@ -100,7 +100,11 @@ final class AvcEncoder implements AutoCloseable {
                     } catch (RuntimeException failure) {
                         failed.accept("讀取 H.264 畫格失敗，請重新分享。");
                     } finally {
-                        owner.releaseOutputBuffer(index, false);
+                        try {
+                            owner.releaseOutputBuffer(index, false);
+                        } catch (IllegalStateException failure) {
+                            failed.accept("編碼器已關閉，請重新開始分享。");
+                        }
                     }
                 }
             }, handler);
@@ -126,6 +130,12 @@ final class AvcEncoder implements AutoCloseable {
     @Override public void close() {
         if (closed) return;
         closed = true;
-        try { codec.release(); } finally { surface.release(); }
+        try {
+            codec.release();
+        } catch (IllegalStateException alreadyReleased) {
+            // Liveness and display cleanup must continue after a vendor codec failure.
+        } finally {
+            surface.release();
+        }
     }
 }
