@@ -1,0 +1,317 @@
+"""Same-origin WebRTC signaling with per-viewer desktop consent."""
+
+import asyncio
+from collections import deque
+from dataclasses import dataclass
+import hmac
+import ipaddress
+import json
+import logging
+from pathlib import Path
+import secrets
+from time import monotonic
+
+from aiohttp import web, WSMsgType
+
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+MAX_PEERS = 16
+APPROVAL_SECONDS = 120
+LOG = logging.getLogger(__name__)
+
+
+def is_loopback(address):
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return ip.is_loopback or bool(getattr(ip, "ipv4_mapped", None) and ip.ipv4_mapped.is_loopback)
+
+
+def matches(provided, expected):
+    return isinstance(provided, str) and provided.isascii() and bool(expected) and hmac.compare_digest(provided, expected)
+
+
+@dataclass
+class Peer:
+    id: str
+    name: str
+    socket: web.WebSocketResponse
+    requested: float
+    approved: bool = False
+    control: bool = False
+    allow_privacy: bool = False
+
+
+async def send(socket, kind, **fields):
+    if socket is not None and not socket.closed:
+        try:
+            await socket.send_json({"type": kind, **fields})
+        except (ConnectionError, RuntimeError):
+            # The socket read loop performs the same cleanup on transport loss.
+            pass
+
+
+async def error(socket, message, **fields):
+    await send(socket, "error", error=message, message=message, **fields)
+
+
+class Room:
+    def __init__(self, token, desktop, ice_servers):
+        self.token = token
+        self.desktop = desktop
+        self.ice_servers = ice_servers
+        self.host = None
+        self.code = None
+        self.peers = {}
+        self.privacy = False
+        self.connections = set()
+        self.attempts = {}
+        self.cleanup_tasks = set()
+
+    def finish_disconnect(self, operation):
+        # A dropped TCP connection can cancel its aiohttp request handler
+        # while other viewers still need notifications and display cleanup.
+        task = asyncio.create_task(operation)
+        self.cleanup_tasks.add(task)
+        task.add_done_callback(self.cleanup_tasks.discard)
+        return asyncio.shield(task)
+
+    def can_connect(self, address):
+        now = monotonic()
+        attempts = self.attempts.setdefault(address, deque())
+        while attempts and attempts[0] < now - 60:
+            attempts.popleft()
+        if len(attempts) >= 40 or len(self.connections) >= 64:
+            return False
+        attempts.append(now)
+        return True
+
+    def release_control(self):
+        try:
+            self.desktop.release()
+        except (OSError, RuntimeError, ValueError):
+            LOG.exception("Could not release held input")
+        if self.privacy:
+            try:
+                self.desktop.set_privacy(False)
+                self.privacy = False
+            except (OSError, RuntimeError, ValueError):
+                LOG.exception("Could not restore the display")
+
+    async def remove_peer(self, peer, *, reason="left"):
+        if self.peers.pop(peer.id, None) is None:
+            return
+        host = self.host
+        private = self.privacy
+        if peer.control:
+            self.release_control()
+        await asyncio.gather(send(peer.socket, reason, id=peer.id), send(host, reason, id=peer.id))
+        if private and not self.privacy:
+            await send(host, "privacy", enabled=False)
+        await peer.socket.close()
+
+    async def end_host(self, host):
+        if self.host is not host:
+            return
+        self.host = None
+        self.code = None
+        peers = list(self.peers.values())
+        self.peers.clear()
+        self.release_control()
+        await asyncio.gather(*(send(p.socket, "left", id=p.id) for p in peers))
+        await asyncio.gather(*(p.socket.close() for p in peers))
+
+    async def privacy_request(self, message):
+        enabled = message.get("enabled")
+        host = self.host
+        reason = None
+        if not isinstance(enabled, bool):
+            reason = "隱私模式設定無效。"
+        elif enabled and not (self.desktop.capabilities.get("privacy") and
+                              any(p.control and p.allow_privacy for p in self.peers.values())):
+            reason = "開啟隱私模式需要支援的螢幕，以及一台已獲准控制並使用隱私模式的裝置。"
+        else:
+            try:
+                self.desktop.set_privacy(enabled)
+                self.privacy = enabled
+            except (OSError, ValueError, RuntimeError) as exc:
+                reason = str(exc)
+        await send(host, "privacy", enabled=self.privacy, **({"error": reason} if reason else {}))
+
+    async def host_message(self, message):
+        host = self.host
+        kind = message.get("type")
+        if kind == "privacy":
+            return await self.privacy_request(message)
+        peer_id = message.get("id")
+        peer = self.peers.get(peer_id) if isinstance(peer_id, str) else None
+        if peer is None:
+            return await error(host, "這台裝置已離線。")
+        if kind == "leave" or (kind == "deny" and not peer.approved):
+            return await self.finish_disconnect(self.remove_peer(peer, reason="denied" if kind == "deny" else "left"))
+        if kind == "approve" and not peer.approved:
+            control = message.get("control", False)
+            if not isinstance(control, bool):
+                return await error(host, "控制權設定無效。", id=peer.id)
+            if control and (not self.desktop.capabilities.get("control") or
+                            any(p.control for p in self.peers.values())):
+                return await error(host, "目前無法授予控制權。請確認主機支援遠端輸入，且其他裝置已結束控制。", id=peer.id)
+            peer.approved, peer.control = True, control
+            peer.allow_privacy = control and message.get("allowPrivacy") is True
+            fields = {"id": peer.id, "control": control, "iceServers": self.ice_servers}
+            await asyncio.gather(send(host, "approved", **fields), send(peer.socket, "approved", **fields))
+        elif kind == "signal" and peer.approved and isinstance(message.get("data"), dict):
+            await send(peer.socket, "signal", id=peer.id, data=message["data"])
+        elif kind == "input" and peer.control and isinstance(message.get("event"), dict):
+            try:
+                self.desktop.apply(message["event"])
+            except (OSError, ValueError, RuntimeError) as exc:
+                await error(host, str(exc), id=peer.id)
+        else:
+            await error(host, "此裝置的權限無法執行這個操作。", id=peer.id)
+
+    async def viewer_message(self, peer, message):
+        if message.get("id") != peer.id:
+            return await error(peer.socket, "連線識別碼無效。")
+        if message.get("type") == "leave":
+            return await self.finish_disconnect(self.remove_peer(peer))
+        if peer.approved and message.get("type") == "signal" and isinstance(message.get("data"), dict):
+            return await send(self.host, "signal", id=peer.id, data=message["data"])
+        await error(peer.socket, "目前無法執行這個操作。", id=peer.id)
+
+    async def sweep(self):
+        while True:
+            await asyncio.sleep(1)
+            now = monotonic()
+            for address, attempts in list(self.attempts.items()):
+                if not attempts or attempts[-1] < now - 60:
+                    self.attempts.pop(address, None)
+            if self.privacy and not self.desktop.privacy_enabled:
+                self.privacy = False
+                await send(self.host, "privacy", enabled=False)
+            if self.privacy and not any(p.control for p in self.peers.values()):
+                self.release_control()
+            expired = [p for p in self.peers.values() if not p.approved and now - p.requested > APPROVAL_SECONDS]
+            await asyncio.gather(*(self.remove_peer(p, reason="denied") for p in expired))
+
+    async def websocket(self, request):
+        if request.headers.get("Origin") != f"{request.scheme}://{request.host}":
+            raise web.HTTPForbidden(text="請直接在瀏覽器分頁中開啟主機網址。")
+        if not self.can_connect(request.remote):
+            raise web.HTTPTooManyRequests(text="連線過於頻繁，請在一分鐘後再試。")
+        socket = web.WebSocketResponse(heartbeat=20, max_msg_size=96 * 1024, timeout=2, compress=False)
+        await socket.prepare(request)
+        self.connections.add(socket)
+        peer = None
+        try:
+            first = await asyncio.wait_for(socket.receive(), timeout=10)
+            message = decode(first)
+            if message is None:
+                return socket
+            if (message.get("type") == "host" and self.host is None and
+                    is_loopback(request.remote) and matches(message.get("token"), self.token)):
+                self.host = socket
+                self.code = secrets.token_urlsafe(12)
+                await send(socket, "hosted", code=self.code, capabilities=self.desktop.capabilities,
+                           iceServers=self.ice_servers)
+            elif (message.get("type") == "join" and self.host is not None and
+                  matches(message.get("code"), self.code) and len(self.peers) < MAX_PEERS):
+                name = message.get("name")
+                if not isinstance(name, str) or not name.strip() or len(name) > 64:
+                    await error(socket, "裝置名稱須為 1 至 64 個字。")
+                    return socket
+                peer = Peer(secrets.token_urlsafe(12), name.strip(), socket, monotonic())
+                self.peers[peer.id] = peer
+                host = self.host
+                await send(socket, "pending", id=peer.id)
+                await send(host, "request", id=peer.id, name=peer.name)
+            else:
+                await error(socket, "無法配對。請確認主機已開啟分享、邀請碼正確，且仍有空位。")
+                return socket
+            window_start = monotonic()
+            count = 0
+            async for frame in socket:
+                message = decode(frame)
+                if message is None:
+                    await error(socket, "訊息格式錯誤。")
+                    break
+                now = monotonic()
+                if now - window_start >= 1:
+                    window_start, count = now, 0
+                count += 1
+                if count > (600 if self.host is socket else 120):
+                    await error(socket, "訊息過於頻繁，連線已中止。")
+                    break
+                if self.host is socket:
+                    await self.host_message(message)
+                elif peer and self.peers.get(peer.id) is peer:
+                    await self.viewer_message(peer, message)
+                else:
+                    break
+        except (TimeoutError, ConnectionError):
+            pass
+        finally:
+            self.connections.discard(socket)
+            if self.host is socket:
+                await self.finish_disconnect(self.end_host(socket))
+            elif peer:
+                await self.finish_disconnect(self.remove_peer(peer))
+            await socket.close()
+        return socket
+
+
+def decode(frame):
+    if frame.type != WSMsgType.TEXT:
+        return None
+    try:
+        message = json.loads(frame.data)
+    except (ValueError, RecursionError):
+        return None
+    return message if isinstance(message, dict) else None
+
+
+@web.middleware
+async def headers(request, handler):
+    response = await handler(request)
+    if not response.prepared:
+        response.headers.update({
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                       "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+                                       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        })
+    return response
+
+
+def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR):
+    room = Room(token, desktop, ice_servers or [])
+    app = web.Application(middlewares=[headers])
+    app.router.add_get("/ws", room.websocket)
+    async def index(_):
+        return web.FileResponse(web_dir / "index.html")
+
+    app.router.add_get("/", index)
+    app.router.add_static("/", web_dir, show_index=False)
+
+    async def housekeeping(_):
+        task = asyncio.create_task(room.sweep())
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def stop(_):
+        if room.host is not None:
+            await room.end_host(room.host)
+        await asyncio.gather(*(ws.close() for ws in list(room.connections)))
+        if room.cleanup_tasks:
+            await asyncio.gather(*list(room.cleanup_tasks))
+        room.release_control()
+
+    app.cleanup_ctx.append(housekeeping)
+    app.on_shutdown.append(stop)
+    return app
