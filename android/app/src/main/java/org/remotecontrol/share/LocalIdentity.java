@@ -20,7 +20,7 @@ import javax.net.ssl.X509ExtendedKeyManager;
 import javax.security.auth.x500.X500Principal;
 
 final class LocalIdentity extends X509ExtendedKeyManager {
-    private static final String ALIAS = "local-screen-certificate-v1";
+    private static final String ALIAS = "local-screen-certificate-v2";
     private final PrivateKey key;
     private final X509Certificate certificate;
 
@@ -33,7 +33,9 @@ final class LocalIdentity extends X509ExtendedKeyManager {
             generator.initialize(new KeyGenParameterSpec.Builder(ALIAS,
                     KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
                     .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
-                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    // Conscrypt hashes the TLS transcript before delegating NONEwithECDSA to AndroidKeyStore.
+                    // SHA-256 is also needed for the self-signed X.509 certificate.
+                    .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
                     .setCertificateSubject(new X500Principal("CN=Remote Screen"))
                     .setCertificateSerialNumber(new BigInteger(120, new SecureRandom()).add(BigInteger.ONE))
                     .setCertificateNotBefore(new Date(now - 86_400_000L))

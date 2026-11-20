@@ -9,4 +9,7 @@ result=$(mktemp)
 trap 'rm -f "$result"' EXIT
 adb shell am instrument -w org.remotecontrol.share.test/androidx.test.runner.AndroidJUnitRunner | tee "$result"
 # adb can return success even when an instrumentation assertion fails.
-grep -Eq '^OK \([1-9][0-9]* tests?\)' "$result"
+if ! grep -Eq '^OK \([1-9][0-9]* tests?\)' "$result"; then
+    adb logcat -d -s RemoteScreenTLS:W AndroidRuntime:E
+    exit 1
+fi

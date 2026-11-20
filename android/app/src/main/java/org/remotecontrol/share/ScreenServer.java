@@ -24,6 +24,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLSocket;
@@ -65,6 +68,7 @@ final class ScreenServer implements Closeable {
     private final Semaphore streams = new Semaphore(6);
     private final Set<Socket> connected = ConcurrentHashMap.newKeySet();
     private final AtomicInteger viewers = new AtomicInteger();
+    private final AtomicLong nextHandshakeLog = new AtomicLong(Long.MIN_VALUE);
     private final String code = randomHex(12), cookieValue = randomHex(24);
     private volatile boolean closed;
     private byte[] latest;
@@ -105,7 +109,12 @@ final class ScreenServer implements Closeable {
                     clients.execute(() -> {
                         try (SSLSocket client = socket) {
                             client.setSoTimeout(7_000);
-                            client.startHandshake();
+                            try {
+                                client.startHandshake();
+                            } catch (IOException | RuntimeException failure) {
+                                logHandshakeFailure(failure);
+                                return;
+                            }
                             handle(client);
                         } catch (IOException ignored) {
                             // A closed browser or incomplete TLS handshake ends this client only.
@@ -120,6 +129,15 @@ final class ScreenServer implements Closeable {
             }
         }, "share-listener");
         thread.start();
+    }
+
+    private void logHandshakeFailure(Exception failure) {
+        // Report only the TLS phase. Pairing credentials, request headers and video never enter this log.
+        long now = System.nanoTime();
+        long next = nextHandshakeLog.get();
+        if (!closed && now >= next && nextHandshakeLog.compareAndSet(next, now + 10_000_000_000L)) {
+            Logger.getLogger("RemoteScreenTLS").log(Level.WARNING, "Screen sharing TLS handshake failed", failure);
+        }
     }
 
     synchronized void publish(byte[] jpeg) {

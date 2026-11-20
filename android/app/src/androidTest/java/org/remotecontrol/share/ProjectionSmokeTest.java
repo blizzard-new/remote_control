@@ -43,6 +43,21 @@ public final class ProjectionSmokeTest {
         return object;
     }
 
+    @Test public void keystoreSignsThePrehashedEcdsaInputUsedByConscrypt() throws Exception {
+        LocalIdentity identity = new LocalIdentity();
+        String alias = identity.chooseEngineServerAlias("EC", null, null);
+        assertNotNull(alias);
+        byte[] transcript = MessageDigest.getInstance("SHA-256").digest("handshake".getBytes(StandardCharsets.US_ASCII));
+        java.security.Signature signer = java.security.Signature.getInstance("NONEwithECDSA");
+        signer.initSign(identity.getPrivateKey(alias));
+        signer.update(transcript);
+        byte[] signature = signer.sign();
+        java.security.Signature verifier = java.security.Signature.getInstance("NONEwithECDSA");
+        verifier.initVerify(identity.getCertificateChain(alias)[0].getPublicKey());
+        verifier.update(transcript);
+        assertTrue(verifier.verify(signature));
+    }
+
     @Test public void consentPairViewStopAndRestartInBothFormats() throws Exception {
         if (Build.VERSION.SDK_INT >= 33) {
             instrumentation.getUiAutomation().grantRuntimePermission(context.getPackageName(),
