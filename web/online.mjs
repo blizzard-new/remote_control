@@ -223,10 +223,20 @@ function begin(host) {
 function safeText(value, len = 60) {
   return typeof value === "string" ? value.slice(0, len) : "";
 }
+function hostStatus(s) {
+  if (active !== s || !s.host) return;
+  const peers = [...s.peers.values()].filter((p) => p.approved);
+  $("status").textContent = !peers.length
+    ? "等候連線"
+    : peers.some((p) => p.control)
+      ? "遠端操作中 · " + peers.length
+      : "觀看中 · " + peers.length;
+}
 function peerLeft(s, id) {
   const p = s.peers.get(id);
   if (!p) return;
   s.peers.delete(id);
+  hostStatus(s);
   if (s.host && ![...s.peers.values()].some((v) => v.approved)) {
     s.reading = false;
     s.hasFrame = false;
@@ -246,7 +256,7 @@ async function connectRelay(s) {
     ready(code) {
       if (active !== s) return;
       clearTimeout(s.deadline);
-      $("status").textContent = "等候連線";
+      hostStatus(s);
       $("invitation").hidden = false;
       $("invite").value = code;
       say("將邀請碼交給另一台已安裝的裝置。");
@@ -483,6 +493,7 @@ function request(s, p, name) {
       clearTimeout(p.timeout);
       p.control = m.control;
       p.approved = true;
+      hostStatus(s);
       renderRequest(s, p);
       let remembered = !!p.pair?.saved;
       if (p.pair && (!remembered || p.localGrant)) {

@@ -285,6 +285,7 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await viewer.locator("#action-connect").click()
                 await expect(host.get_by_role("button",name="中斷連線")).to_be_visible()
                 await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
+                await expect(host.locator("#status")).to_contain_text("遠端操作中")
                 await expect(viewer.locator("#stage")).to_be_visible()
                 await host.locator("#stop").click()
                 await expect(viewer.locator("#stage")).to_be_hidden()
