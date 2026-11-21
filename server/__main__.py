@@ -27,7 +27,7 @@ def ice_configuration(raw):
     return servers
 
 
-def main(argv=None, *, on_ready=None):
+def main(argv=None, *, on_ready=None, online_socket=None):
     parser = argparse.ArgumentParser(description="Start a remote desktop session on this computer.")
     parser.add_argument("--bind", default="127.0.0.1", help="loopback address, or 0.0.0.0/:: for other devices")
     parser.add_argument("--port", type=int, default=8443)
@@ -67,14 +67,21 @@ def main(argv=None, *, on_ready=None):
     domain = "localhost" if args.bind in {"0.0.0.0", "::", "localhost", "127.0.0.1", "::1"} else args.bind
     if ":" in domain:
         domain = f"[{domain}]"
-    url = f"{'https' if context else 'http'}://{domain}:{args.port}/#host={token}"
+    port = args.port
+    path = "/"
+    listen = {"host": args.bind, "port": port}
+    if online_socket is not None:
+        domain, port = online_socket.getsockname()
+        path = "/online.html"
+        listen = {"sock": online_socket}
+    url = f"{'https' if context else 'http'}://{domain}:{port}{path}#host={token}"
     def announce(banner):
         print(f"Open on this computer (private host link):\n{url}", flush=True)
         print(banner, flush=True)
         if on_ready:
             on_ready(url)
 
-    web.run_app(app, host=args.bind, port=args.port, ssl_context=context, access_log=None, print=announce)
+    web.run_app(app, **listen, ssl_context=context, access_log=None, print=announce)
 
 
 if __name__ == "__main__":

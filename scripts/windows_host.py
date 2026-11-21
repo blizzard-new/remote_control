@@ -1,5 +1,6 @@
 """Interactive desktop launcher. The same entry point runs from source or a frozen EXE."""
 import argparse
+import errno
 import ipaddress
 import os
 from pathlib import Path
@@ -67,6 +68,24 @@ def open_host(url):
     print("請在這台電腦的 Chrome 或 Edge 貼上上方的主機連結。", flush=True)
 
 
+def start_online(port, *, on_ready):
+    if port is not None and not 0 <= port <= 65535:
+        raise ValueError("本機連接埠必須在 0–65535 之間")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        if sys.platform == "win32":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            listener.bind(("127.0.0.1", 8443 if port is None else port))
+        except OSError as error:
+            # Windows can report WSAEACCES for a reserved or exclusively held port.
+            unavailable = error.errno == errno.EADDRINUSE or getattr(error, "winerror", None) in (10013, 10048)
+            if port is not None or not unavailable:
+                raise
+            listener.bind(("127.0.0.1", 0))
+        options = ["--request-control"] if sys.platform == "darwin" else []
+        run_server(options, online_socket=listener, on_ready=on_ready)
+
+
 def main():
     # Redirected output on Windows inherits a legacy code page on some systems.
     for stream in (sys.stdout, sys.stderr):
@@ -75,22 +94,17 @@ def main():
     parser = argparse.ArgumentParser(description="啟動遠端桌面")
     parser.add_argument("--lan", action="store_true", help="使用區域網路與自訂憑證模式")
     parser.add_argument("--address", type=ipaddress.IPv4Address, help="這台電腦的 LAN IPv4")
-    parser.add_argument("--port", type=int, default=8443)
+    parser.add_argument("--port", type=int, help="指定連接埠；跨網路模式可填 0 讓系統分配")
     data_home = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     parser.add_argument("--state-dir", type=Path, default=data_home / "RemoteControlHost" / "identities")
     parser.add_argument("--no-browser", action="store_true", help="僅在主控台顯示連結與公開憑證位置")
     args = parser.parse_args()
     if not args.lan and args.address is None:
-        options = ["--bind", "127.0.0.1", "--port", str(args.port)]
-        if sys.platform == "darwin":
-            options.append("--request-control")
-        def online(url):
-            open_host(url.replace("/#host=", "/online.html#host="))
-        run_server(options, on_ready=None if args.no_browser else online)
+        start_online(args.port, on_ready=None if args.no_browser else open_host)
         return 0
     print("將手機或平板連上與這台電腦相同的區網。", flush=True)
     address = args.address or select_address()
-    ca_path, server_args = lan_server_args(address, args.port, args.state_dir)
+    ca_path, server_args = lan_server_args(address, 8443 if args.port is None else args.port, args.state_dir)
     print("三星平板首次連線時，將上方的 trusted-root.crt 傳到平板，在設定中搜尋「安裝憑證」並安裝為 CA 憑證。")
     print("只需傳送 trusted-root.crt 這個公開檔案。請以主機顯示的 SHA-256 指紋核對憑證。")
     print("主機請使用 Chrome 或 Edge，在主機頁面按「選擇畫面並開始分享」，再逐一核准觀看者。")

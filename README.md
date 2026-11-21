@@ -26,7 +26,9 @@ Windows、macOS 和 Linux 主機可用桌面版 Chrome 或 Edge，透過瀏覽�
 
 ## 在 Windows 或 Mac 啟動
 
-**區網專用模式**可用 `RemoteControlHost.exe --lan` 啟動。選擇這台電腦的區網 IPv4 位址；例如電腦是 `192.168.1.20`，平板就開啟 `https://192.168.1.20:8443/`。請保持啟動視窗開啟。[建置與下載](https://github.com/blizzard-new/remote_control/actions?query=workflow%3A%22Build+and+test%22)
+直接開啟桌面版會進入跨網路模式。本機控制頁優先使用 8443，若已被占用，程式會自動改用可用的連接埠並開啟正確的網址。
+
+**區網專用模式**可用 `.\RemoteControl-Windows-x64.exe --lan` 啟動。選擇這台電腦的區網 IPv4 位址；例如電腦是 `192.168.1.20`，平板就開啟 `https://192.168.1.20:8443/`。請保持啟動視窗開啟。[建置與下載](https://github.com/blizzard-new/remote_control/actions?query=workflow%3A%22Build+and+test%22)
 
 **在 Mac 或其他電腦上從原始碼啟動**，請使用 Python 3.11 以上版本，在專案目錄執行以下指令。將範例 IP 換成被控制電腦的 Wi-Fi 或乙太網路 IPv4 位址。
 
