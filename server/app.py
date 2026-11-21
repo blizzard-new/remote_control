@@ -275,12 +275,14 @@ def decode(frame):
 async def headers(request, handler):
     response = await handler(request)
     if not response.prepared:
+        online = request.path == "/online.html"
+        connections = "'self' wss: ws://localhost:* ws://127.0.0.1:*" if online else "'self'"
         response.headers.update({
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                                       "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+                                       f"img-src 'self' data:; media-src 'self' blob:; connect-src {connections}; "
                                        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         })
     return response

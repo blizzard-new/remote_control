@@ -182,3 +182,46 @@ class BrowserSmoke(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await observer.locator("#screen").evaluate("v => v.srcObject === null"))
             self.assertEqual(await host.evaluate("window.testCapture.readyState"), "ended")
             await expect(host.locator("#count")).to_have_text("0")
+
+
+class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_two_apps_use_only_outbound_relay_for_approved_screen_and_input(self):
+        from relay.__main__ import create_app as relay_app
+        desktop = RecordingDesktop()
+        secret = secrets.token_urlsafe(32)
+        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop)) as sharing, \
+                TestServer(create_app("viewer-only", RecordingDesktop())) as viewing, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
+                args=["--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
+            try:
+                host, viewer = await browser.new_page(), await browser.new_page()
+                await host.add_init_script(CANVAS_CAPTURE)
+                # Simulate a pair of networks where no direct media path is possible.
+                await host.add_init_script("window.RTCPeerConnection = undefined")
+                await viewer.add_init_script("window.RTCPeerConnection = undefined")
+                await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
+                await host.locator("#settings summary").click()
+                await host.locator("#relay").fill(str(relay.make_url("/")).rstrip("/"))
+                await host.locator("#start").click()
+                await expect(host.locator("#invitation")).to_be_visible()
+                invite = await host.locator("#invite").input_value()
+                self.assertTrue(invite.startswith("rc1."))
+                await viewer.goto(str(viewing.make_url("/online.html")))
+                await viewer.locator("#code").fill(invite)
+                await viewer.locator("#connect").click()
+                await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await host.get_by_role("button", name="允許操作").click()
+                await viewer.wait_for_function("""() => {const c=document.querySelector('#picture');
+                    return c.width===320 && c.getContext('2d').getImageData(160,90,1,1).data[1]>155}""")
+                await viewer.locator("#picture").evaluate("""c=>{
+                    const r=c.getBoundingClientRect();
+                    c.dispatchEvent(new WheelEvent('wheel',{cancelable:true,clientX:r.left+r.width/2,
+                      clientY:r.top+r.height/2,deltaY:1.25,deltaX:-0.5}));}""")
+                event = await asyncio.wait_for(desktop.wheel.get(), timeout=5)
+                self.assertEqual((event["dx"],event["dy"]),(-0.5,1.25))
+                await host.locator("#stop").click()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await asyncio.wait_for(desktop.released.wait(),timeout=5)
+            finally:
+                await browser.close()

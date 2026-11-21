@@ -70,15 +70,24 @@ def open_host(url):
 def main():
     # Redirected output on Windows inherits a legacy code page on some systems.
     for stream in (sys.stdout, sys.stderr):
-        if stream is not None and not stream.isatty():
+        if stream is not None and not stream.isatty() and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-    parser = argparse.ArgumentParser(description="啟動遠端桌面 Windows 主機")
+    parser = argparse.ArgumentParser(description="啟動遠端桌面")
+    parser.add_argument("--lan", action="store_true", help="使用區域網路與自訂憑證模式")
     parser.add_argument("--address", type=ipaddress.IPv4Address, help="這台電腦的 LAN IPv4")
     parser.add_argument("--port", type=int, default=8443)
     data_home = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     parser.add_argument("--state-dir", type=Path, default=data_home / "RemoteControlHost" / "identities")
     parser.add_argument("--no-browser", action="store_true", help="僅在主控台顯示連結與公開憑證位置")
     args = parser.parse_args()
+    if not args.lan and args.address is None:
+        options = ["--bind", "127.0.0.1", "--port", str(args.port)]
+        if sys.platform == "darwin":
+            options.append("--request-control")
+        def online(url):
+            open_host(url.replace("/#host=", "/online.html#host="))
+        run_server(options, on_ready=None if args.no_browser else online)
+        return 0
     print("將手機或平板連上與這台電腦相同的區網。", flush=True)
     address = args.address or select_address()
     ca_path, server_args = lan_server_args(address, args.port, args.state_dir)
