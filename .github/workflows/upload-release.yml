@@ -1,0 +1,37 @@
+name: Upload verified 0.2.0 downloads
+
+on:
+  push:
+    branches: [release-assets/v0.2.0]
+  workflow_dispatch:
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/release-assets/v0.2.0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source build and release target
+        run: |
+          build=$(gh api repos/"$GITHUB_REPOSITORY"/actions/runs/44927413971)
+          jq -e '.conclusion == "success" and .head_sha == "3570689f4bc9723a9d8e15987a88ac1edcb91b09"' <<< "$build"
+          gh release view v0.2.0 --json isDraft,targetCommitish | jq -e '.isDraft and .targetCommitish == "3570689f4bc9723a9d8e15987a88ac1edcb91b09"'
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 44927413971
+          github-token: ${{ github.token }}
+          path: build-artifacts
+      - name: Verify and attach files to the draft
+        working-directory: packaging/release
+        run: |
+          mv ../../build-artifacts/Windows-desktop-host/RemoteControlHost.exe RemoteControl-Windows-x64.exe
+          mv ../../build-artifacts/Mac-host-macos-15/RemoteControl-macOS-arm64.zip .
+          mv ../../build-artifacts/Mac-host-macos-15-intel/RemoteControl-macOS-x86_64.zip .
+          sha256sum --check --strict SHA256SUMS.txt
+          gh release upload v0.2.0 RemoteControl* SHA256SUMS.txt --clobber
