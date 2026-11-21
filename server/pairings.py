@@ -31,11 +31,12 @@ def save(db, listen, item):
     local = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
     if not url.hostname or url.username or url.password or url.query or url.fragment or (url.scheme != "https" and not local):
         raise ValueError("服務網址無效")
-    db.execute("BEGIN IMMEDIATE")
+    grant = item.get("grant", "")
+    if grant not in ("","view","control"): raise ValueError("無效的裝置權限")
     exists = db.execute("SELECT 1 FROM devices WHERE listen=?", (listen,)).fetchone()
     if not exists and db.execute("SELECT count(*) FROM devices").fetchone()[0] >= 16:
         raise ValueError("最多可記住 16 台裝置，請先解除舊配對")
-    db.execute("INSERT OR REPLACE INTO devices VALUES (?,?,?,?)", (listen, dial, name.strip(), address))
+    db.execute("INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?)", (listen, dial, name.strip(), address, grant))
 
 
 def update(path, action, item):
@@ -47,9 +48,12 @@ def update(path, action, item):
     db = sqlite3.connect(path, timeout=4)
     try:
         with db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS devices (
                 listen TEXT PRIMARY KEY, dial TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL
             )""")
+            if "grant_mode" not in {row[1] for row in db.execute("PRAGMA table_info(devices)")}:
+                db.execute("ALTER TABLE devices ADD COLUMN grant_mode TEXT NOT NULL DEFAULT ''")
             if action != "list":
                 listen = item.get("listen")
                 if not isinstance(listen, str) or not KEY.fullmatch(listen):
@@ -59,6 +63,6 @@ def update(path, action, item):
                 else:
                     save(db, listen, item)
             db.row_factory = sqlite3.Row
-            return [dict(row) for row in db.execute("SELECT * FROM devices ORDER BY name")]
+            return [dict(row) for row in db.execute("SELECT listen,dial,name,address,grant_mode AS [grant] FROM devices ORDER BY name")]
     finally:
         db.close()

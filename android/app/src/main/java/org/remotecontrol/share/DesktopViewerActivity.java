@@ -15,6 +15,12 @@ public final class DesktopViewerActivity extends Activity {
     private LinearLayout page;
     private TrackpadWebView viewer;
     private boolean immersive;
+    private AppUpdates updates;
+    private void updateState() {
+        if (updates == null || viewer == null) return;
+        viewer.evaluateJavascript("window.phoneUpdateState?.("+
+            org.json.JSONObject.quote(updates.message())+","+updates.available()+","+updates.busy()+")",null);
+    }
 
     private void fullScreen(boolean active) {
         immersive = active;
@@ -43,8 +49,12 @@ public final class DesktopViewerActivity extends Activity {
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         setContentView(page);
-        if(getIntent().getBooleanExtra("online",false)) showViewer("https://appassets.androidplatform.net/online.html");
+        if(onlineMode()) showViewer("https://appassets.androidplatform.net/online.html");
         else addressForm("", null);
+    }
+
+    private boolean onlineMode() {
+        return getIntent().getBooleanExtra("online",false) || android.content.Intent.ACTION_MAIN.equals(getIntent().getAction());
     }
 
     private void addressForm(String address, String error) {
@@ -77,7 +87,7 @@ public final class DesktopViewerActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private void showViewer(String address) {
         String origin = DesktopOrigin.of(address);
-        boolean bundled = getIntent().getBooleanExtra("online",false) && origin.equals("https://appassets.androidplatform.net");
+        boolean bundled = onlineMode() && origin.equals("https://appassets.androidplatform.net");
         page.removeAllViews();
         page.setPadding(0, 0, 0, 0);
         TrackpadWebView view = new TrackpadWebView(this, origin);
@@ -90,8 +100,23 @@ public final class DesktopViewerActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
         if (bundled) {
+            updates = new AppUpdates(this,new LinearLayout(this),this::updateState);
+            view.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void refresh() { runOnUiThread(() -> updateState()); }
+                @JavascriptInterface public void action(boolean install) { runOnUiThread(() -> {
+                    if (viewer == view && !immersive && updates!=null) updates.action(install);
+                }); }
+            },"PhoneUpdates");
             view.addJavascriptInterface(new PhoneDevices(this), "PhoneDevices");
             view.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void keyboard(boolean show) {
+                    view.postDelayed(() -> {
+                        if (viewer != view || !immersive) return;
+                        android.view.inputmethod.InputMethodManager ime = getSystemService(android.view.inputmethod.InputMethodManager.class);
+                        if (show) ime.showSoftInput(view,android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                        else ime.hideSoftInputFromWindow(view.getWindowToken(),0);
+                    },65);
+                }
                 @JavascriptInterface public void setActive(boolean active) {
                     runOnUiThread(() -> { if (viewer == view) fullScreen(active); });
                 }
@@ -106,9 +131,9 @@ public final class DesktopViewerActivity extends Activity {
             @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
                 if (bundled && DesktopOrigin.matches(origin,request.getUrl().toString())) {
                     String path=request.getUrl().getPath();
-                    if(path!=null && path.matches("/(online\\.html|style\\.css|online\\.mjs|relay\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)")) {
-                        String mime=path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":"text/javascript";
-                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.singletonMap("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src wss:; media-src blob:; img-src data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'"),
+                    if(path!=null && (path.matches("/icons/[a-z0-9-]+\\.svg") || path.matches("/(online\\.html|dashboard\\.css|style\\.css|online\\.mjs|relay\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)"))) {
+                        String mime=path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":path.endsWith("svg")?"image/svg+xml":"text/javascript";
+                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.singletonMap("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src wss:; media-src blob:; img-src 'self' data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'"),
                                 getAssets().open(path.substring(1))); }
                         catch(java.io.IOException unavailable) { /* fall through to the denied response */ }
                     }
@@ -140,6 +165,7 @@ public final class DesktopViewerActivity extends Activity {
         if (viewer == null) return;
         TrackpadWebView closing = viewer;
         viewer = null;
+        if (updates!=null) {updates.close(); updates=null;}
         fullScreen(false);
         closing.navigationStarted();
         page.removeView(closing);
@@ -156,6 +182,7 @@ public final class DesktopViewerActivity extends Activity {
     @Override public void onResume() {
         super.onResume();
         if (viewer != null) viewer.onResume();
+        if (updates != null) updates.resumed();
     }
 
     @Override public void onDestroy() {

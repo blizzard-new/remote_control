@@ -51,7 +51,10 @@ final class AppUpdates {
         }
     }
 
-    AppUpdates(Activity activity, LinearLayout page) {
+    private Runnable observer;
+    AppUpdates(Activity activity, LinearLayout page) { this(activity,page,null); }
+    AppUpdates(Activity activity, LinearLayout page, Runnable observer) {
+        this.observer=observer;
         this.activity = activity;
         status = new TextView(activity);
         check = new Button(activity); check.setText("檢查更新");
@@ -103,14 +106,21 @@ final class AppUpdates {
         throw new IOException("Android 新版安裝檔尚未就緒。");
     }
 
+    String message() { return status.getText().toString(); }
+    boolean available() { return offer != null; }
+    boolean busy() { return !check.isEnabled(); }
+    void action(boolean installing) { if (!busy()) { if (installing) install(); else check(); } }
+
     private void pending(String text) {
         check.setEnabled(false); install.setEnabled(false); status.setText(text);
+        if(observer!=null) observer.run();
     }
 
     private void show(String text) {
         if (activity.isFinishing() || activity.isDestroyed()) return;
         status.setText(text); check.setEnabled(true); install.setEnabled(true);
         install.setVisibility(offer == null ? View.GONE : View.VISIBLE);
+        if(observer!=null) observer.run();
     }
 
     private void check() {

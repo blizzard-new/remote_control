@@ -179,7 +179,7 @@ public final class ShareActivity extends Activity {
                 rendered=requests; pending.removeAllViews();
                 for(java.util.Map.Entry<String,String> entry:requests.entrySet()) {
                     String id=entry.getKey();
-                    TextView name=new TextView(ShareActivity.this);name.setText(entry.getValue()+" 請求連線");pending.addView(name);
+                    TextView name=new TextView(ShareActivity.this);name.setText(entry.getValue()+" 請求連線。首次允許後，此裝置可依相同權限直接重連。");pending.addView(name);
                     if(canControl) {
                         Button control=new Button(ShareActivity.this);control.setText("允許操作");
                         control.setOnClickListener(v -> { host.decide(id,true,true); moveTaskToBack(true); });pending.addView(control);

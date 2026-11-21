@@ -42,6 +42,7 @@ class Peer:
     approved: bool = False
     control: bool = False
     allow_privacy: bool = False
+    focus_task: object = None
 
 
 async def send(socket, kind, **fields):
@@ -62,6 +63,7 @@ class Room:
         self.token = token
         self.desktop = desktop
         self.ice_servers = ice_servers
+        self.last_capture = 0.0
         self.primary_capture = primary_capture
         self.frame_task = None
         self.host = None
@@ -105,6 +107,7 @@ class Room:
     async def remove_peer(self, peer, *, reason="left"):
         if self.peers.pop(peer.id, None) is None:
             return
+        if peer.focus_task: peer.focus_task.cancel()
         host = self.host
         private = self.privacy
         if not any(p.approved for p in self.peers.values()):
@@ -123,6 +126,8 @@ class Room:
         self.code = None
         peers = list(self.peers.values())
         self.peers.clear()
+        for p in peers:
+            if p.focus_task: p.focus_task.cancel()
         await self.stop_capture()
         self.release_control()
         await asyncio.gather(*(send(p.socket, "left", id=p.id) for p in peers))
@@ -145,8 +150,10 @@ class Room:
                 reason = str(exc)
         await send(host, "privacy", enabled=self.privacy, **({"error": reason} if reason else {}))
 
-    async def capture_frame(self, host):
+    async def capture_frame(self, host, fps):
         try:
+            await asyncio.sleep(max(0, self.last_capture + 1/fps - monotonic()))
+            self.last_capture = monotonic()
             data = await self.primary_capture.frame()
             if host is self.host and any(p.approved for p in self.peers.values()):
                 await host.send_bytes(data)
@@ -162,13 +169,22 @@ class Room:
         if self.primary_capture is not None:
             await self.primary_capture.stop()
 
+    async def check_keyboard(self, peer, serial):
+        await asyncio.sleep(0.12)
+        try:
+            editable = await asyncio.to_thread(self.desktop.editable_focus)
+        except (OSError,RuntimeError):
+            editable = False
+        if self.peers.get(peer.id) is peer and peer.control:
+            await send(peer.socket,"keyboard",editable=editable,serial=serial)
+
     async def host_message(self, message):
         host = self.host
         kind = message.get("type")
         if kind == "primary-frame":
             if self.primary_capture and any(p.approved for p in self.peers.values()):
                 if self.frame_task is None or self.frame_task.done():
-                    self.frame_task = asyncio.create_task(self.capture_frame(host))
+                    self.frame_task = asyncio.create_task(self.capture_frame(host, 60 if message.get("fps") == 60 else 30))
             return
         if kind == "privacy":
             return await self.privacy_request(message)
@@ -193,7 +209,13 @@ class Room:
             await send(peer.socket, "signal", id=peer.id, data=message["data"])
         elif kind == "input" and peer.control and isinstance(message.get("event"), dict):
             try:
-                self.desktop.apply(message["event"])
+                event = message["event"]
+                self.desktop.apply(event)
+                serial = event.get("tap")
+                if (event.get("kind") == "button" and event.get("down") is False and type(serial) is int
+                        and 0 < serial <= 2147483647 and self.desktop.capabilities.get("keyboard")):
+                    if peer.focus_task: peer.focus_task.cancel()
+                    peer.focus_task = asyncio.create_task(self.check_keyboard(peer, serial))
             except (OSError, ValueError, RuntimeError) as exc:
                 await error(host, str(exc), id=peer.id)
         else:

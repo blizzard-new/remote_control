@@ -3,6 +3,7 @@
 import ctypes as ct
 import math
 import sys
+from pathlib import Path
 
 from ctypes import wintypes as wt
 
@@ -70,6 +71,11 @@ class WindowsBackend:
         self.privacy_supported = sys.getwindowsversion().build >= 19041 and not primary_only
         self._curtain = PrivacyCurtain()
 
+    def editable_focus(self):
+        path = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1] / "build/focus/Release")) / "EditableFocus.dll"
+        if not path.is_file(): return False
+        return bool(ct.WinDLL(str(path)).IsEditableFocus())
+
     def geometry(self):
         if not self.primary_only and self.user.GetSystemMetrics(80) != 1:  # SM_CMONITORS
             raise RuntimeError("遠端控制需要一台啟用的螢幕")
@@ -120,6 +126,12 @@ class WindowsBackend:
             self._mouse(0x8001, x=round(event["x"] * 65535), y=round(event["y"] * 65535))
         if kind == "button":
             self._button(event["button"], event["down"])
+        elif kind == "text":
+            raw = event["text"].encode("utf-16-le")
+            for pos in range(0,len(raw),2):
+                unit = int.from_bytes(raw[pos:pos+2],"little")
+                for flags in (4,6):
+                    self._send(Input(1, InputData(keyboard=KeyboardInput(0,unit,flags,0,0))))
         elif kind == "key":
             self._key(event["code"], event["down"])
         elif kind == "wheel":

@@ -76,6 +76,7 @@ final class PhoneShare implements AutoCloseable {
             Base64.decode(key, Base64.URL_SAFE),
             ready,
             false);
+    c.host.grant = saved ? pair.optString("grant") : "";
     channels.put(key, c);
     c.host.start();
     if (frame != null) c.host.publish(frame);
@@ -134,10 +135,11 @@ final class PhoneShare implements AutoCloseable {
     int viewer = Integer.parseInt(parts[1]);
     String name = c.host.pending().get(viewer);
     if (name == null) return;
-    if (allow && !c.saved) {
+    if (allow && c.host.grant.isEmpty()) {
       try {
-        c.pair.put("name", name).put("address", address);
+        c.pair.put("name", name).put("address", address).put("grant", control ? "control" : "view");
         c.saved = !devices.update("save", c.pair.toString()).equals("null");
+        if (c.saved) c.host.grant = c.pair.getString("grant");
       } catch (Exception ignored) {
       }
     }
@@ -146,6 +148,56 @@ final class PhoneShare implements AutoCloseable {
 
   synchronized void forget(String key) {
     remove(key);
+  }
+
+  synchronized int codecProfile() {
+    int profile = -1;
+    for (Channel c : channels.values()) {
+      int candidate=c.host.codecProfile();
+      if (candidate == -1) continue;
+      if (profile != -1 && profile != candidate) return 0;
+      profile=candidate;
+    }
+    return Math.max(0,profile);
+  }
+  synchronized void video(long timeUs, boolean key, byte[] unit) {
+    if (closed || unit.length == 0) return;
+    byte[] packet = java.nio.ByteBuffer.allocate(9+unit.length).put((byte)(key?1:0)).putLong(timeUs).put(unit).array();
+    for (Channel c : channels.values()) c.host.video(key,packet);
+  }
+
+  synchronized int edge() {
+    int value = 0;
+    for (Channel c : channels.values()) value = Math.max(value,c.host.edge());
+    return value;
+  }
+
+  synchronized int fps() {
+    int value = 0;
+    for (Channel c : channels.values()) value = Math.max(value,c.host.fps());
+    return value;
+  }
+
+  synchronized void publish(android.graphics.Bitmap source, java.io.ByteArrayOutputStream buffer) {
+    if (closed) return;
+    for (int edge : new int[]{960,1280,1920}) {
+      boolean wanted = false;
+      for (Channel c : channels.values()) if (c.host.wants(edge)) { wanted = true; break; }
+      if (!wanted) continue;
+      double scale = Math.min(1d, edge / (double)Math.max(source.getWidth(),source.getHeight()));
+      android.graphics.Bitmap image = scale == 1 ? source : android.graphics.Bitmap.createScaledBitmap(source,
+          Math.max(1,(int)Math.round(source.getWidth()*scale)), Math.max(1,(int)Math.round(source.getHeight()*scale)), true);
+      try {
+        for (int quality : new int[]{88,72,54,36}) {
+          buffer.reset();
+          if (!image.compress(android.graphics.Bitmap.CompressFormat.JPEG,quality,buffer)) break;
+          if (buffer.size() > 340000) continue;
+          byte[] data = buffer.toByteArray();
+          for (Channel c : channels.values()) c.host.publish(data,edge);
+          break;
+        }
+      } finally { if (image != source) image.recycle(); }
+    }
   }
 
   synchronized void publish(byte[] jpeg) {

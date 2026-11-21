@@ -13,9 +13,17 @@ import org.json.JSONObject;
 public final class PhoneDevices {
   private static final Object LOCK = new Object();
   private final SharedPreferences preferences;
+  private final Context context;
 
   PhoneDevices(Context context) {
+    this.context=context;
     preferences = context.getSharedPreferences("paired-devices", Context.MODE_PRIVATE);
+  }
+
+  @JavascriptInterface public void openHost() {
+    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+      context.startActivity(new android.content.Intent(context, ShareActivity.class)
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)));
   }
 
   @JavascriptInterface
@@ -49,7 +57,8 @@ public final class PhoneDevices {
                     .put("listen", listen)
                     .put("dial", dial)
                     .put("name", name)
-                    .put("address", address));
+                    .put("address", address)
+                    .put("grant", item.optString("grant", "")));
           } else throw new IllegalArgumentException();
           if (!preferences.edit().putString("contacts", entries.toString()).commit())
             throw new IllegalStateException();

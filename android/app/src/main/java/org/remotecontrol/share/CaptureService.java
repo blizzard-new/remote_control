@@ -65,6 +65,8 @@ public final class CaptureService extends Service {
     private final ByteArrayOutputStream jpeg = new ByteArrayOutputStream();
     private boolean scheduled;
     private long lastFrame;
+    private boolean captured;
+    private int rawWidth, rawHeight, codecProfile, failedProfile;
     private volatile boolean destroyed;
     private String endReason = "分享已停止，所有連線已關閉。";
 
@@ -126,6 +128,17 @@ public final class CaptureService extends Service {
             online = internet;
             beginProjection(consent);
             internet.start();
+            worker.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (destroyed) return;
+                    int wanted = internet.codecProfile();
+                    if (wanted != codecProfile && (wanted == 0 || wanted != failedProfile) && rawWidth > 0)
+                        changeSize(rawWidth,rawHeight);
+                    if (encoder == null && captured && internet.viewers() > 0 && SystemClock.uptimeMillis() - lastFrame >= 500)
+                        internet.publish(bitmap, jpeg);
+                    worker.postDelayed(this, 500);
+                }
+            },500);
             main.post(new Runnable() {
                 @Override public void run() {
                     if (destroyed) return;
@@ -238,7 +251,32 @@ public final class CaptureService extends Service {
 
     private void resize(int sourceWidth, int sourceHeight) {
         if (sourceWidth <= 0 || sourceHeight <= 0) return;
-        if(internet!=null) PhoneControl.captureSize(sourceWidth,sourceHeight);
+        rawWidth = sourceWidth; rawHeight = sourceHeight;
+        if (internet != null) {
+            PhoneControl.captureSize(sourceWidth,sourceHeight);
+            int wanted=internet.codecProfile();
+            if (wanted==failedProfile) wanted=0;
+            if (encoder!=null && wanted==codecProfile && encodedSourceWidth==sourceWidth && encodedSourceHeight==sourceHeight) return;
+            if (encoder!=null) { display.setSurface(null); encoder.close(); encoder=null; }
+            codecProfile=0;
+            if (wanted>0) {
+                final int selected=wanted;
+                try {
+                    encoder=AvcEncoder.open(sourceWidth,sourceHeight,worker,internet::video,
+                        error -> worker.post(() -> { if (codecProfile==selected && !destroyed) {failedProfile=selected; changeSize(rawWidth,rawHeight);} }),
+                        wanted/100,wanted%100);
+                    int dpi=Math.max(1,Math.round(getResources().getDisplayMetrics().densityDpi * encoder.width/(float)sourceWidth));
+                    attachSurface(encoder.width,encoder.height,dpi,encoder.surface);
+                    if (reader!=null) {reader.close();reader=null;}
+                    if (bitmap!=null) {bitmap.recycle();bitmap=null;packed=null;}
+                    captured=false; codecProfile=wanted; encodedSourceWidth=sourceWidth; encodedSourceHeight=sourceHeight;
+                    return;
+                } catch (RuntimeException unavailable) {
+                    if (encoder!=null) {encoder.close();encoder=null;}
+                    failedProfile=wanted;
+                }
+            }
+        }
         if (highQuality) {
             if (encoder != null && sourceWidth == encodedSourceWidth && sourceHeight == encodedSourceHeight) return;
             if (encoder != null) {
@@ -255,7 +293,7 @@ public final class CaptureService extends Service {
             encodedSourceHeight = sourceHeight;
             return;
         }
-        double scale = Math.min(1, (internet == null ? 1280d : 960d) / Math.max(sourceWidth, sourceHeight));
+        double scale = Math.min(1, (internet == null ? 1280d : 1920d) / Math.max(sourceWidth, sourceHeight));
         int w = Math.max(1, (int) Math.round(sourceWidth * scale));
         int h = Math.max(1, (int) Math.round(sourceHeight * scale));
         if (reader != null && reader.getWidth() == w && reader.getHeight() == h) return;
@@ -266,7 +304,7 @@ public final class CaptureService extends Service {
             if (current == reader && !scheduled && !destroyed) {
                 scheduled = true;
                 // Acquire the newest frame at the deadline, keeping memory and slow clients bounded.
-                long period = internet == null ? (server.viewers() > 0 ? 84 : 500) : (internet.viewers() > 0 ? 140 : 500);
+                long period = internet == null ? (server.viewers() > 0 ? 84 : 500) : (internet.fps() == 60 ? 16 : internet.fps() == 30 ? 33 : 500);
                 worker.postAtTime(this::encodeFrame, Math.max(SystemClock.uptimeMillis(), lastFrame + period));
             }
         }, worker);
@@ -276,6 +314,7 @@ public final class CaptureService extends Service {
             if (previous != null) previous.close();
         }
         if (bitmap != null) bitmap.recycle();
+        captured = false;
         bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         packed = ByteBuffer.allocateDirect(w * h * 4);
     }
@@ -300,10 +339,11 @@ public final class CaptureService extends Service {
             }
             packed.flip();
             bitmap.copyPixelsFromBuffer(packed);
+            captured = true;
+            if (internet != null) { internet.publish(bitmap,jpeg); return; }
             jpeg.reset();
             if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 76, jpeg)) throw new IllegalStateException("JPEG 編碼失敗。");
-            if (internet != null) internet.publish(jpeg.toByteArray());
-            else server.publish(jpeg.toByteArray());
+            server.publish(jpeg.toByteArray());
         } catch (RuntimeException error) {
             stopWith("畫面擷取中斷：" + reason(error));
         }

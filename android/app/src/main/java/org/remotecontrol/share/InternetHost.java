@@ -36,6 +36,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   private WebSocket socket;
   private byte[] latestFrame;
   private boolean closed, ready;
+  volatile String grant = "";
 
   InternetHost(String address, Consumer<String> stopped) {
     this(address, stopped, new OkHttpClient.Builder().pingInterval(22, TimeUnit.SECONDS).build());
@@ -104,7 +105,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     try {
       if (allow) {
         p.approved = true;
-        p.control = control && PhoneControl.claim(p);
+        p.control = control && !p.viewOnly && PhoneControl.claim(p);
         send(
             p,
             1,
@@ -122,12 +123,62 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     }
   }
 
-  synchronized void publish(byte[] jpeg) {
+  // Zero means JPEG, -1 means this channel has no viewers.
+  synchronized int codecProfile() {
+    int profile = -1;
+    for (Peer p : peers.values()) if (p.approved) {
+      int candidate = p.avc ? p.edge*100+p.fps : 0;
+      if (profile != -1 && candidate != profile) return 0;
+      profile = candidate;
+    }
+    return profile;
+  }
+  private long windowStart, windowBytes;
+  synchronized void video(boolean key, byte[] packet) {
+    if (closed || socket == null) return;
+    long now = android.os.SystemClock.elapsedRealtime();
+    if (now-windowStart >= 1000) {windowStart=now; windowBytes=0;}
+    for (Peer p : peers.values().toArray(new Peer[0])) {
+      if (!p.approved || !p.avc) continue;
+      if (packet.length > 375000 || socket.queueSize() > 420000 || windowBytes+packet.length > 3700000) {
+        p.needsKey = true; continue;
+      }
+      if (p.needsKey && !key) continue;
+      try { send(p,3,packet); p.needsKey=false; windowBytes+=packet.length+32; }
+      catch(Exception e) { drop(p.id); }
+    }
+  }
+
+  synchronized int edge() {
+    int edge = 0;
+    for (Peer p : peers.values()) if (p.approved) edge = Math.max(edge, p.edge);
+    return edge;
+  }
+
+  synchronized boolean wants(int edge) {
+    for (Peer p : peers.values()) if (p.approved && p.edge == edge) return true;
+    return false;
+  }
+
+  synchronized int fps() {
+    int fps = 0;
+    for (Peer p : peers.values()) if (p.approved) fps = Math.max(fps, p.fps);
+    return fps;
+  }
+
+  synchronized void publish(byte[] jpeg) { publish(jpeg, 0); }
+
+  synchronized void publish(byte[] jpeg, int edge) {
     if (closed || socket == null || jpeg.length > 340000) return;
-    latestFrame = jpeg;
+    if (edge == 0) latestFrame = jpeg;
     if (socket.queueSize() > 420000) return;
     for (Peer p : peers.values().toArray(new Peer[0]))
-      if (p.approved) {
+      if (p.approved && (edge == 0 || p.edge == edge)) {
+        long now = android.os.SystemClock.elapsedRealtimeNanos();
+        if (now < p.nextFrame) continue;
+        // Stay below the deployed relay's per-socket 5 MB/s limit including siblings.
+        long wirePeriod = (jpeg.length + 64L) * 1000000000L * Math.max(1,viewers()) / 3800000;
+        p.nextFrame = now + Math.max(1000000000L / p.fps - 1500000L, wirePeriod);
         try {
           send(p, 2, jpeg);
         } catch (Exception e) {
@@ -205,6 +256,11 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
           return;
         }
         p.name = name;
+        p.profile(m);
+        p.viewOnly = m.optBoolean("viewOnly");
+        if ("view".equals(grant) || "control".equals(grant)) decide(id, true, "control".equals(grant), true);
+      } else if (p.approved && "quality".equals(m.optString("t"))) {
+        p.profile(m);
       } else if (p.approved && p.control && "input".equals(m.optString("t"))) {
         PhoneControl.input(p, m.optJSONObject("event"));
       }
@@ -270,7 +326,16 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     final int id;
     final byte[] tx, rx;
     long outgoing, incoming;
-    boolean approved, control;
+    boolean approved, control, viewOnly;
+    boolean avc, needsKey=true;
+    int edge = 1920, fps = 30;
+    long nextFrame;
+    void profile(JSONObject m) {
+      avc = m.optBoolean("avc",false); needsKey=true;
+      int value = m.optInt("edge", 1920);
+      edge = value == 960 || value == 1280 ? value : 1920;
+      fps = m.optInt("fps", 30) == 60 ? 60 : 30;
+    }
     String name;
 
     Peer(int id, byte[] tx, byte[] rx) {

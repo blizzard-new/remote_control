@@ -1,6 +1,9 @@
 """Quartz input for one macOS display. All positions use global display points."""
 
 import ctypes as ct
+from pathlib import Path
+import subprocess
+import sys
 from math import trunc
 from time import monotonic
 
@@ -78,6 +81,7 @@ class Quartz:
         self._set_location = _bind(cg, "CGEventSetLocation", None, ref, Point)
         self._mouse = _bind(cg, "CGEventCreateMouseEvent", ref, ref, uint, Point, uint)
         self._key = _bind(cg, "CGEventCreateKeyboardEvent", ref, ref, ct.c_uint16, ct.c_bool)
+        self._unicode = _bind(cg, "CGEventKeyboardSetUnicodeString", None, ref, ct.c_ulong, ct.POINTER(ct.c_uint16))
         # The non-variadic API uses the same ABI on Intel and Apple Silicon.
         self._wheel = _bind(cg, "CGEventCreateScrollWheelEvent2", ref, ref, uint, uint, sint, sint, sint)
         self._field = _bind(cg, "CGEventSetIntegerValueField", None, ref, uint, ct.c_int64)
@@ -124,6 +128,17 @@ class Quartz:
     def key(self, keycode, down, flags, clear, repeat):
         event = self._key(None, keycode, down)
         self._emit(event, flags, clear=clear, fields=((8, int(repeat)),))  # kCGKeyboardEventAutorepeat
+
+    def text(self, value):
+        # Keep supplementary characters together at Quartz's event boundary.
+        for char in value:
+            raw = char.encode("utf-16-le")
+            units = (ct.c_uint16 * (len(raw)//2)).from_buffer_copy(raw)
+            for down in (True,False):
+                event = self._key(None,0,down)
+                if not event: raise RuntimeError("無法建立文字輸入事件。")
+                self._unicode(event,len(units),units)
+                self._emit(event,0)
 
     def scroll(self, dx, dy, position, flags):
         # Pixel units, wheel 1 vertical / wheel 2 horizontal. Quartz positive
@@ -189,9 +204,19 @@ class MacBackend:
             self.quartz.mouse(release, position, cg_button, self._flags(self._keys), self._buttons[button])
             del self._buttons[button]
 
+    def editable_focus(self):
+        path = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1] / "build")) / "PrimaryDisplay"
+        if not path.is_file(): return False
+        try:
+            return subprocess.run([str(path),"--editable"],capture_output=True,timeout=1.5).stdout.strip() == b"1"
+        except (OSError,subprocess.TimeoutExpired):
+            return False
+
     def apply(self, event):
         kind = event["kind"]
-        if kind == "key":
+        if kind == "text":
+            self.quartz.text(event["text"])
+        elif kind == "key":
             self._key(event["code"], event["down"])
         elif kind == "button":
             self._button(event["button"], event["down"], self._position(event))

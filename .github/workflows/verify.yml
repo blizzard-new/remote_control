@@ -54,6 +54,8 @@ jobs:
           if ($syntaxErrors) { throw ($syntaxErrors -join [Environment]::NewLine) }
       - if: runner.os == 'Windows'
         run: |
+          cmake -S packaging/focus -B build/focus -A x64
+          cmake --build build/focus --config Release
           python -m pip install "pyinstaller>=6.12,<7"
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControlHost.exe
@@ -76,7 +78,7 @@ jobs:
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
           codesign --verify --deep --strict dist/RemoteControl.app
-          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.4.0 "RemoteControl-macOS-$(uname -m).pkg"
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.0 "RemoteControl-macOS-$(uname -m).pkg"
           ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

@@ -12,8 +12,12 @@ def validate_event(event):
     if not isinstance(event, dict):
         raise ValueError("輸入事件格式錯誤")
     kind = event.get("kind")
-    if kind not in ("move", "button", "wheel", "key", "release"):
+    if kind not in ("move", "button", "wheel", "key", "release", "text"):
         raise ValueError("不支援的輸入事件")
+    if kind == "text":
+        value = event.get("text")
+        if not isinstance(value, str) or not 0 < len(value) <= 256 or any(ord(c)<32 or 0xd800<=ord(c)<=0xdfff for c in value):
+            raise ValueError("文字輸入無效")
     if kind == "move" or "x" in event or "y" in event:
         if kind not in ("move", "button", "wheel") or not all(_number(event.get(axis), 0, 1) for axis in ("x", "y")):
             raise ValueError("游標超出分享畫面")
@@ -55,6 +59,7 @@ class Desktop:
             hint = str(exc)
         result = {
             "control": width > 0 and height > 0,
+            "keyboard": hasattr(self._backend,"editable_focus"),
             "privacy": width > 0 and height > 0 and bool(getattr(self._backend, "privacy_supported", False)),
             "width": width,
             "height": height,
@@ -62,6 +67,10 @@ class Desktop:
         if hint and not result["control"]:
             result["controlHint"] = hint
         return result
+
+    def editable_focus(self):
+        probe = getattr(self._backend, "editable_focus", None)
+        return bool(probe and probe())
 
     def request_control(self):
         if hasattr(self._backend, "request_control"):

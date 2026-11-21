@@ -211,6 +211,8 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
             async def stop(self): pass
 
         screen = Display()
+        desktop.capabilities = {**desktop.capabilities, "keyboard": True}
+        desktop.editable_focus = lambda: True
         async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db, primary_capture=screen)) as sharing, \
                 TestServer(create_app("viewer-only", RecordingDesktop(), device_store=viewer_db, primary_capture=Display())) as viewing, async_playwright() as pw:
             browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
@@ -230,9 +232,11 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 invite = await host.locator("#invite").input_value()
                 self.assertRegex(invite, r"^[0-9]{4}$")
                 await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await viewer.locator("nav [data-page=settings]").click()
                 await viewer.locator("#name").fill("測試平板")
+                await viewer.locator("nav [data-page=connect]").click()
                 await viewer.locator("#code").fill(invite)
-                await viewer.locator("#connect").click()
+                # The fourth digit submits the pairing request.
                 await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 self.assertEqual(screen.frames, 0)
@@ -250,6 +254,17 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((tap["kind"], tap["down"]), ("button",True))
                 self.assertAlmostEqual(tap["x"], 0.75, places=2)
                 self.assertAlmostEqual(tap["y"], 0.5, places=2)
+                await expect(viewer.locator("#ime")).to_be_focused()
+                await viewer.keyboard.insert_text("你好")
+                while True:
+                    received = await asyncio.wait_for(desktop.events.get(),5)
+                    if received["kind"] == "text": break
+                self.assertEqual(received["text"],"你好")
+                await viewer.keyboard.press("Escape")
+                await viewer.locator("#video-menu summary").click()
+                await viewer.locator("#quality").select_option("1280")
+                await viewer.locator("#fps").select_option("60")
+                await viewer.locator("#video-menu summary").click()
                 await viewer.locator("#picture").evaluate("""c=>{
                     const r=c.getBoundingClientRect();
                     c.dispatchEvent(new WheelEvent('wheel',{cancelable:true,clientX:r.left+r.width/2,
@@ -267,16 +282,19 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await expect(host.locator("#invitation")).to_be_visible()
                 await expect(viewer.locator("#code")).to_have_value("")
                 await viewer.locator("#remembered button").first.click()
-                await expect(host.get_by_text("測試平板（已配對）")).to_be_visible()
-                await host.get_by_role("button",name="允許觀看").click()
+                await viewer.locator("#action-connect").click()
+                await expect(host.get_by_role("button",name="中斷連線")).to_be_visible()
+                await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
                 await expect(viewer.locator("#stage")).to_be_visible()
                 await host.locator("#stop").click()
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 # The same pairing also works in reverse without entering a new PIN.
                 await viewer.goto("about:blank")
                 await viewer.goto(str(viewing.make_url("/online.html")) + "#host=viewer-only")
+                await viewer.locator("#self").click()
                 await expect(viewer.locator("#invitation")).to_be_visible()
                 await host.locator("#remembered button").first.click()
+                await host.locator("#action-connect").click()
                 await viewer.get_by_role("button",name="允許觀看").click()
                 await expect(host.locator("#stage")).to_be_visible()
 
@@ -300,6 +318,7 @@ class UpdateScreenSmoke(unittest.IsolatedAsyncioTestCase):
             try:
                 page = await browser.new_page()
                 await page.goto(str(server.make_url("/online.html")) + "#host=test-console")
+                await page.locator("nav [data-page=settings]").click()
                 await expect(page.locator("#update-status")).to_contain_text("0.5.0")
                 await page.get_by_role("button", name="檢查更新").click()
                 await expect(page.locator("#update-status")).to_contain_text("0.5.0")

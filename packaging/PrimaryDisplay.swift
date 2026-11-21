@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 import CoreGraphics
 import ScreenCaptureKit
 import ImageIO
@@ -38,6 +39,24 @@ struct PrimaryDisplay {
         }
     }
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().first == "--editable" {
+            let root = AXUIElementCreateSystemWide()
+            AXUIElementSetMessagingTimeout(root, 0.4)
+            var element: CFTypeRef?
+            if AXUIElementCopyAttributeValue(root,kAXFocusedUIElementAttribute as CFString,&element) == .success,
+               let element = element, CFGetTypeID(element) == AXUIElementGetTypeID() {
+                let focused = element as! AXUIElement
+                AXUIElementSetMessagingTimeout(focused, 0.4)
+                var role: CFTypeRef?
+                var writable = DarwinBoolean(false)
+                _ = AXUIElementCopyAttributeValue(focused,kAXRoleAttribute as CFString,&role)
+                _ = AXUIElementIsAttributeSettable(focused,kAXSelectedTextAttribute as CFString,&writable)
+                if ["AXTextField","AXTextArea","AXComboBox"].contains(role as? String ?? "") || writable.boolValue {
+                    print("1")
+                }
+            }
+            return
+        }
         if #available(macOS 14.0, *) { try await capture() }
     }
 }

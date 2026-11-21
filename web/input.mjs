@@ -26,7 +26,7 @@ export function wheelPixels(event, bounds, lineHeight = 16) {
   return Number.isFinite(dx) && Number.isFinite(dy) ? { dx, dy } : null;
 }
 
-export function attachInput(video, send) {
+export function attachInput(video, send, {detectText = false} = {}) {
   const doc = video.ownerDocument;
   const win = doc.defaultView;
   const cleanup = new AbortController();
@@ -75,8 +75,9 @@ export function attachInput(video, send) {
     mouseButtons = mask;
   }
 
-  function touchButton(down, point) {
-    send({ kind: 'button', button: 0, down, ...point });
+  let serial = 0;
+  function touchButton(down, point, tap = false) {
+    send({ ...(tap && detectText ? {tap:++serial} : {}), kind: 'button', button: 0, down, ...point });
   }
 
   video.addEventListener('pointerdown', event => {
@@ -144,7 +145,7 @@ export function attachInput(video, send) {
         if (dragging) touchButton(false, point);
         else if (position(event)) {
           touchButton(true, point);
-          touchButton(false, point);
+          touchButton(false, point, true);
         }
       }
       if (!touches.size) {
