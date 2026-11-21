@@ -21,6 +21,28 @@ public final class PhoneControl extends AccessibilityService {
   private String foreground = "";
   private float startX, startY;
   private long pressed;
+  private double wheelX, wheelY;
+  private float anchorX, anchorY;
+  private boolean wheelScheduled;
+  private long nextWheel;
+  private final Runnable scroll =
+      () -> {
+        synchronized (PhoneControl.class) {
+          wheelScheduled = false;
+          if (controller != null && service == this && userScreen() && fullDisplay()) {
+            DisplayMetrics m = metrics();
+            float dx =
+                (float) Math.max(-m.widthPixels * .45, Math.min(m.widthPixels * .45, wheelX * 3));
+            float dy =
+                (float) Math.max(-m.heightPixels * .45, Math.min(m.heightPixels * .45, wheelY * 3));
+            float endX = Math.max(1, Math.min(m.widthPixels - 2, anchorX - dx));
+            float endY = Math.max(1, Math.min(m.heightPixels - 2, anchorY - dy));
+            gesture(anchorX, anchorY, endX, endY, 150);
+            nextWheel = SystemClock.uptimeMillis() + 160;
+          }
+          wheelX = wheelY = 0;
+        }
+      };
 
   @Override
   public void onServiceConnected() {
@@ -84,12 +106,16 @@ public final class PhoneControl extends AccessibilityService {
     controller = null;
     if (service != null) {
       service.pressed = 0;
+      service.wheelScheduled = false;
+      service.wheelX = service.wheelY = 0;
+      service.nextWheel = 0;
       service.main.removeCallbacksAndMessages(null);
     }
   }
 
   static synchronized void input(Object peer, JSONObject event) {
     if (service == null || controller != peer || event == null) return;
+    if ("move".equals(event.optString("kind"))) return;
     PhoneControl target = service;
     target.main.post(
         () -> {
@@ -153,21 +179,14 @@ public final class PhoneControl extends AccessibilityService {
     } else if (kind.equals("wheel")) {
       double dx = e.optDouble("dx", 0), dy = e.optDouble("dy", 0);
       if (!Double.isFinite(dx) || !Double.isFinite(dy) || (dx == 0 && dy == 0)) return;
-      float endX =
-          (float)
-              Math.max(
-                  1,
-                  Math.min(
-                      m.widthPixels - 2,
-                      x - Math.copySign(Math.min(m.widthPixels * .45, Math.abs(dx) * 3), dx)));
-      float endY =
-          (float)
-              Math.max(
-                  1,
-                  Math.min(
-                      m.heightPixels - 2,
-                      y - Math.copySign(Math.min(m.heightPixels * .45, Math.abs(dy) * 3), dy)));
-      gesture(x, y, endX, endY, 180);
+      anchorX = x;
+      anchorY = y;
+      wheelX += dx;
+      wheelY += dy;
+      if (!wheelScheduled) {
+        wheelScheduled = true;
+        main.postAtTime(scroll, Math.max(SystemClock.uptimeMillis() + 20, nextWheel));
+      }
     }
   }
 

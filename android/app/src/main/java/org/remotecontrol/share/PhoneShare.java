@@ -34,11 +34,17 @@ final class PhoneShare implements AutoCloseable {
   }
 
   PhoneShare(Context context, String address, Consumer<String> stopped) {
-    this.address = address;
+    okhttp3.HttpUrl parsed = okhttp3.HttpUrl.get(address);
+    if (!parsed.isHttps()
+        || !parsed.username().isEmpty()
+        || !parsed.password().isEmpty()
+        || parsed.query() != null
+        || parsed.fragment() != null) throw new IllegalArgumentException("請輸入 HTTPS 配對服務網址");
+    this.address = parsed.toString().replaceFirst("/+$", "");
     devices = new PhoneDevices(context);
     directory =
         new PinDirectory(
-            address,
+            this.address,
             client,
             new PinDirectory.Listener() {
               public void offer(JSONObject pair, Runnable ready) throws Exception {

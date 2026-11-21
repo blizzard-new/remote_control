@@ -126,7 +126,8 @@ function peerLeft(s, id) {
   if (active === s && !s.host) closeSession(s, "分享已結束。");
 }
 async function connectRelay(s) {
-  const address = $("relay").value.trim();
+  const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
+  $("relay").value = address;
   const events = {
     ready(code) {
       if (active !== s) return;
