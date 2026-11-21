@@ -31,6 +31,7 @@ public final class ShareActivity extends Activity {
     private java.util.Map<String,String> rendered = new java.util.LinkedHashMap<>();
     private boolean prompting, renderedControl;
     private Button enable;
+    private AppUpdates updates;
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
@@ -94,7 +95,9 @@ public final class ShareActivity extends Activity {
         });
         page.addView(copyInvite);page.addView(pending);
         start = new Button(this);
-        start.setText("選擇分享畫面");
+        start.setText(internetMode.isChecked() ? "開放整個螢幕連線" : "選擇分享畫面");
+        internetMode.setOnCheckedChangeListener((button, checked) ->
+            start.setText(checked ? "開放整個螢幕連線" : "選擇分享畫面"));
         start.setOnClickListener(v -> {
             if(internetMode.isChecked()) {
                 try { DesktopOrigin.viewerUrl(relay.getText().toString().trim()); }
@@ -120,6 +123,7 @@ public final class ShareActivity extends Activity {
         options.addView(internetMode);options.addView(relay);options.addView(highQuality);options.addView(viewer);
         options.setVisibility(View.GONE);page.addView(options);
         more.setOnClickListener(v->options.setVisibility(options.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE));
+        updates = new AppUpdates(this, page);
         scroll.addView(page);
         setContentView(scroll);
     }
@@ -194,7 +198,10 @@ public final class ShareActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refresh.run();
+        updates.resumed();
     }
+
+    @Override protected void onDestroy() { updates.close(); super.onDestroy(); }
 
     @Override protected void onPause() {
         main.removeCallbacks(refresh);

@@ -71,6 +71,7 @@ class Quartz:
         self.has_access = _bind(cg, "CGPreflightPostEventAccess", ct.c_bool)
         self.request_access = _bind(cg, "CGRequestPostEventAccess", ct.c_bool)
         self._displays = _bind(cg, "CGGetActiveDisplayList", sint, uint, ct.POINTER(uint), ct.POINTER(uint))
+        self._main = _bind(cg, "CGMainDisplayID", uint)
         self._bounds = _bind(cg, "CGDisplayBounds", Rect, uint)
         self._create = _bind(cg, "CGEventCreate", ref, ref)
         self._location = _bind(cg, "CGEventGetLocation", Point, ref)
@@ -84,11 +85,11 @@ class Quartz:
         self._set_flags = _bind(cg, "CGEventSetFlags", None, ref, ct.c_uint64)
         self._post = _bind(cg, "CGEventPost", None, uint, ref)
 
-    def bounds(self):
+    def bounds(self, primary=False):
         displays, count = (ct.c_uint32 * 2)(), ct.c_uint32()
-        if self._displays(2, displays, ct.byref(count)) or count.value != 1:
+        if not primary and (self._displays(2, displays, ct.byref(count)) or count.value != 1):
             raise RuntimeError("Mac 的遠端操作需要單一啟用中的顯示器。")
-        rect = self._bounds(displays[0])
+        rect = self._bounds(self._main() if primary else displays[0])
         if rect.size.width < 1 or rect.size.height < 1:
             raise RuntimeError("無法讀取 Mac 顯示器的尺寸。")
         return rect.origin.x, rect.origin.y, int(rect.size.width), int(rect.size.height)
@@ -133,7 +134,8 @@ class Quartz:
 class MacBackend:
     privacy_supported = False
 
-    def __init__(self, quartz=None):
+    def __init__(self, quartz=None, *, primary_only=False):
+        self.primary_only = primary_only
         self.quartz = quartz if quartz is not None else Quartz()
         self._keys = set()
         self._buttons = {}
@@ -148,7 +150,7 @@ class MacBackend:
     def geometry(self):
         if not self.quartz.has_access():
             raise RuntimeError(ACCESS_HINT)
-        self._display = self.quartz.bounds()
+        self._display = self.quartz.bounds(primary=True) if self.primary_only else self.quartz.bounds()
         return self._display[2:]
 
     def _flags(self, keys):

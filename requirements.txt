@@ -1,2 +1,4 @@
 aiohttp>=3.12.14,<4
 cryptography>=42,<51
+Pillow>=11.3,<13
+certifi>=2024.8.30

@@ -22,10 +22,12 @@ class RecordingDesktop:
     privacy_enabled = False
 
     def __init__(self):
+        self.events = asyncio.Queue()
         self.wheel = asyncio.Queue()
         self.released = asyncio.Event()
 
     def apply(self, event):
+        self.events.put_nowait(event)
         if event["kind"] == "wheel":
             self.wheel.put_nowait(event)
 
@@ -194,34 +196,60 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
         state = TemporaryDirectory()
         self.addCleanup(state.cleanup)
         host_db, viewer_db = (Path(state.name) / n for n in ("host.db","viewer.db"))
-        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db)) as sharing, \
-                TestServer(create_app("viewer-only", RecordingDesktop(), device_store=viewer_db)) as viewing, async_playwright() as pw:
+        from io import BytesIO
+        from PIL import Image
+
+        class Display:
+            def __init__(self):
+                self.frames = 0
+                with BytesIO() as out:
+                    Image.new("RGB", (320,180), (16,200,80)).save(out, format="JPEG")
+                    self.jpeg = out.getvalue()
+            async def frame(self):
+                self.frames += 1
+                return self.jpeg
+            async def stop(self): pass
+
+        screen = Display()
+        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db, primary_capture=screen)) as sharing, \
+                TestServer(create_app("viewer-only", RecordingDesktop(), device_store=viewer_db, primary_capture=Display())) as viewing, async_playwright() as pw:
             browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
                 args=["--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
             try:
-                host, viewer = await browser.new_page(), await browser.new_page()
-                await host.add_init_script(CANVAS_CAPTURE)
+                host = await browser.new_page()
+                viewer = await browser.new_page(viewport={"width": 400, "height": 800}, is_mobile=True, has_touch=True)
+                address = json.dumps(str(relay.make_url("/")).rstrip("/"))
+                for page in (host, viewer):
+                    await page.add_init_script("localStorage.setItem('rc-relay'," + address + ")")
+
                 # Simulate a pair of networks where no direct media path is possible.
                 await host.add_init_script("window.RTCPeerConnection = undefined")
                 await viewer.add_init_script("window.RTCPeerConnection = undefined")
                 await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
-                await host.locator("#settings summary").click()
-                await host.locator("#relay").fill(str(relay.make_url("/")).rstrip("/"))
-                await host.locator("#start").click()
                 await expect(host.locator("#invitation")).to_be_visible()
                 invite = await host.locator("#invite").input_value()
                 self.assertRegex(invite, r"^[0-9]{4}$")
                 await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
-                await viewer.locator("#settings summary").click()
-                await viewer.locator("#relay").fill(str(relay.make_url("/")).rstrip("/"))
                 await viewer.locator("#name").fill("測試平板")
                 await viewer.locator("#code").fill(invite)
                 await viewer.locator("#connect").click()
                 await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
                 await expect(viewer.locator("#stage")).to_be_hidden()
+                self.assertEqual(screen.frames, 0)
                 await host.get_by_role("button", name="允許操作").click()
                 await viewer.wait_for_function("""() => {const c=document.querySelector('#picture');
                     return c.width===320 && c.getContext('2d').getImageData(160,90,1,1).data[1]>155}""")
+                box = await viewer.locator("#picture").bounding_box()
+                self.assertEqual((box["width"],box["height"]), (400,800))
+                await viewer.keyboard.press("a")
+                key = await asyncio.wait_for(desktop.events.get(),5)
+                self.assertEqual((key["kind"],key["code"],key["down"]),("key","KeyA",True))
+                await desktop.events.get()
+                await viewer.touchscreen.tap(300,400)
+                tap = await asyncio.wait_for(desktop.events.get(),5)
+                self.assertEqual((tap["kind"], tap["down"]), ("button",True))
+                self.assertAlmostEqual(tap["x"], 0.75, places=2)
+                self.assertAlmostEqual(tap["y"], 0.5, places=2)
                 await viewer.locator("#picture").evaluate("""c=>{
                     const r=c.getBoundingClientRect();
                     c.dispatchEvent(new WheelEvent('wheel',{cancelable:true,clientX:r.left+r.width/2,
@@ -236,7 +264,6 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
                 await viewer.goto("about:blank")
                 await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
-                await host.locator("#start").click()
                 await expect(host.locator("#invitation")).to_be_visible()
                 await expect(viewer.locator("#code")).to_have_value("")
                 await viewer.locator("#remembered button").first.click()
@@ -247,13 +274,39 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 # The same pairing also works in reverse without entering a new PIN.
                 await viewer.goto("about:blank")
-                await viewer.add_init_script(CANVAS_CAPTURE)
                 await viewer.goto(str(viewing.make_url("/online.html")) + "#host=viewer-only")
-                await viewer.locator("#start").click()
                 await expect(viewer.locator("#invitation")).to_be_visible()
                 await host.locator("#remembered button").first.click()
                 await viewer.get_by_role("button",name="允許觀看").click()
                 await expect(host.locator("#stage")).to_be_visible()
 
+            finally:
+                await browser.close()
+
+
+class UpdateScreenSmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_launch_checks_then_user_starts_install_from_desktop(self):
+        class Updater:
+            def __init__(self):
+                self.calls = []
+            async def run(self, action, busy):
+                self.calls.append(action)
+                if action == "install":
+                    return {"installing": True}
+                return {"current":"0.4.0", "latest":"0.5.0", "available":True}
+        updater = Updater()
+        async with TestServer(create_app("test-console", RecordingDesktop(), updater=updater)) as server, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None)
+            try:
+                page = await browser.new_page()
+                await page.goto(str(server.make_url("/online.html")) + "#host=test-console")
+                await expect(page.locator("#update-status")).to_contain_text("0.5.0")
+                await page.get_by_role("button", name="檢查更新").click()
+                await expect(page.locator("#update-status")).to_contain_text("0.5.0")
+                await page.get_by_role("button",name="立即更新").click()
+                await expect(page.locator("#update-status")).to_contain_text("已開啟安裝程式")
+                self.assertEqual(updater.calls,["check","check","install"])
+                response = await page.request.post(str(server.make_url("/api/update")),data={"action":"install"})
+                self.assertEqual(response.status,403)
             finally:
                 await browser.close()

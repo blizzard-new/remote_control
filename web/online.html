@@ -21,8 +21,8 @@
       </p>
       <div class="host-grid">
         <section id="hostbox" class="card" hidden>
-          <h2>分享這台電腦</h2>
-          <button class="primary" id="start">分享螢幕並顯示四碼</button>
+          <h2>連接這台電腦</h2>
+          <button class="primary" id="start">開放連線</button>
           <div hidden id="invitation">
             <label for="invite">四位數配對碼</label>
             <div class="invite-row">
@@ -38,7 +38,7 @@
             </p>
           </div>
           <div id="devices" class="devices"></div>
-          <button class="secondary danger" id="stop" hidden>停止分享</button>
+          <button class="secondary danger" id="stop" hidden>停止接受連線</button>
           <a id="lan" href="/">區網 WebRTC、音訊及隱私模式</a>
         </section>
         <section class="card" id="joinbox">
@@ -69,6 +69,12 @@
       <div class="stage" id="stage" hidden>
         <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
       </div>
+      <section id="updates" class="help" hidden>
+        <h2>軟體更新</h2>
+        <p id="update-status" role="status"></p>
+        <button class="secondary" id="check-update">檢查更新</button>
+        <button class="primary" id="install-update" hidden>立即更新</button>
+      </section>
       <details id="settings" class="help">
         <summary>配對服務設定</summary>
         <label for="relay">配對服務 HTTPS 網址</label

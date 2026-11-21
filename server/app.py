@@ -9,6 +9,7 @@ import json
 import logging
 from pathlib import Path
 import secrets
+import subprocess
 from time import monotonic
 
 from aiohttp import web, WSMsgType
@@ -57,10 +58,12 @@ async def error(socket, message, **fields):
 
 
 class Room:
-    def __init__(self, token, desktop, ice_servers):
+    def __init__(self, token, desktop, ice_servers, primary_capture=None):
         self.token = token
         self.desktop = desktop
         self.ice_servers = ice_servers
+        self.primary_capture = primary_capture
+        self.frame_task = None
         self.host = None
         self.code = None
         self.peers = {}
@@ -104,6 +107,8 @@ class Room:
             return
         host = self.host
         private = self.privacy
+        if not any(p.approved for p in self.peers.values()):
+            await self.stop_capture()
         if peer.control:
             self.release_control()
         await asyncio.gather(send(peer.socket, reason, id=peer.id), send(host, reason, id=peer.id))
@@ -118,6 +123,7 @@ class Room:
         self.code = None
         peers = list(self.peers.values())
         self.peers.clear()
+        await self.stop_capture()
         self.release_control()
         await asyncio.gather(*(send(p.socket, "left", id=p.id) for p in peers))
         await asyncio.gather(*(p.socket.close() for p in peers))
@@ -139,9 +145,31 @@ class Room:
                 reason = str(exc)
         await send(host, "privacy", enabled=self.privacy, **({"error": reason} if reason else {}))
 
+    async def capture_frame(self, host):
+        try:
+            data = await self.primary_capture.frame()
+            if host is self.host and any(p.approved for p in self.peers.values()):
+                await host.send_bytes(data)
+        except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
+            if host is self.host:
+                await send(host, "capture-error", message=str(exc) or "無法擷取主螢幕，請確認系統權限。")
+
+    async def stop_capture(self):
+        if self.frame_task is not None:
+            self.frame_task.cancel()
+            await asyncio.gather(self.frame_task, return_exceptions=True)
+            self.frame_task = None
+        if self.primary_capture is not None:
+            await self.primary_capture.stop()
+
     async def host_message(self, message):
         host = self.host
         kind = message.get("type")
+        if kind == "primary-frame":
+            if self.primary_capture and any(p.approved for p in self.peers.values()):
+                if self.frame_task is None or self.frame_task.done():
+                    self.frame_task = asyncio.create_task(self.capture_frame(host))
+            return
         if kind == "privacy":
             return await self.privacy_request(message)
         peer_id = message.get("id")
@@ -214,7 +242,7 @@ class Room:
                 self.host = socket
                 self.code = secrets.token_urlsafe(12)
                 await send(socket, "hosted", code=self.code, capabilities=self.desktop.capabilities,
-                           iceServers=self.ice_servers)
+                           iceServers=self.ice_servers, primaryCapture=self.primary_capture is not None)
             elif (message.get("type") == "join" and self.host is not None and
                   matches(message.get("code"), self.code) and len(self.peers) < MAX_PEERS):
                 name = message.get("name")
@@ -288,8 +316,8 @@ async def headers(request, handler):
     return response
 
 
-def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_store=None):
-    room = Room(token, desktop, ice_servers or [])
+def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_store=None, primary_capture=None, updater=None):
+    room = Room(token, desktop, ice_servers or [], primary_capture)
     app = web.Application(middlewares=[headers])
     if device_store is not None:
         from .pairings import update
@@ -306,6 +334,19 @@ def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_stor
                 raise web.HTTPBadRequest(text=str(error))
             return web.json_response(devices)
         app.router.add_post("/api/paired", paired_devices)
+    if updater is not None:
+        async def software_update(request):
+            if (not is_loopback(request.remote) or request.headers.get("Origin") != f"{request.scheme}://{request.host}"
+                    or not matches(request.headers.get("X-Host-Token"), token)):
+                raise web.HTTPForbidden()
+            try:
+                payload = await request.json()
+                action = payload.get("action") if isinstance(payload, dict) else None
+                result = await updater.run(action, lambda: bool(room.peers))
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response(result)
+        app.router.add_post("/api/update", software_update)
     app.router.add_get("/ws", room.websocket)
     async def index(_):
         return web.FileResponse(web_dir / "index.html")

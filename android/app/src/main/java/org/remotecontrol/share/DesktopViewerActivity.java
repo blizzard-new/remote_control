@@ -14,6 +14,29 @@ import java.io.ByteArrayInputStream;
 public final class DesktopViewerActivity extends Activity {
     private LinearLayout page;
     private TrackpadWebView viewer;
+    private boolean immersive;
+
+    private void fullScreen(boolean active) {
+        immersive = active;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController bars = getWindow().getInsetsController();
+            if (bars == null) return;
+            int types = android.view.WindowInsets.Type.systemBars();
+            if (active) {
+                bars.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                bars.hide(types);
+            } else bars.show(types);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(active
+                ? android.view.View.SYSTEM_UI_FLAG_FULLSCREEN | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : android.view.View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+    }
+
+    @Override public void onWindowFocusChanged(boolean focus) {
+        super.onWindowFocusChanged(focus);
+        if (focus && immersive) fullScreen(true);
+    }
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -66,7 +89,14 @@ public final class DesktopViewerActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        if (bundled) view.addJavascriptInterface(new PhoneDevices(this), "PhoneDevices");
+        if (bundled) {
+            view.addJavascriptInterface(new PhoneDevices(this), "PhoneDevices");
+            view.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void setActive(boolean active) {
+                    runOnUiThread(() -> { if (viewer == view) fullScreen(active); });
+                }
+            }, "ViewerScreen");
+        }
         settings.setSupportZoom(false);
         settings.setSupportMultipleWindows(false);
         view.setWebViewClient(new WebViewClient() {
@@ -110,6 +140,7 @@ public final class DesktopViewerActivity extends Activity {
         if (viewer == null) return;
         TrackpadWebView closing = viewer;
         viewer = null;
+        fullScreen(false);
         closing.navigationStarted();
         page.removeView(closing);
         closing.stopLoading();

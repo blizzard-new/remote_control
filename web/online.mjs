@@ -59,6 +59,7 @@ function say(value) {
 function closeSession(s, message) {
   if (active !== s) return;
   active = null;
+  mobileView(false);
   s.abort.abort();
   s.relay?.close();
   s.local?.close();
@@ -71,6 +72,7 @@ function closeSession(s, message) {
   }
   clearTimeout(s.deadline);
   clearInterval(s.frames);
+  clearInterval(s.captureTimer);
   s.detach?.();
   $("start").hidden = $("connect").disabled = false;
   $("joinbox").hidden =
@@ -97,10 +99,10 @@ function begin(host) {
     abort: new AbortController(),
   });
   $("status").textContent = "正在連線";
-  $("joinbox").hidden = host;
+  $("joinbox").hidden = false;
   $("start").hidden = true;
-  $("connect").disabled = true;
-  $("settings").hidden = true;
+  $("connect").disabled = !host;
+  $("settings").hidden = !host;
   $("hostbox").hidden = !host;
   $("stop").hidden = !host;
   $("leave").hidden = host;
@@ -118,6 +120,10 @@ function peerLeft(s, id) {
   const p = s.peers.get(id);
   if (!p) return;
   s.peers.delete(id);
+  if (s.host && ![...s.peers.values()].some((v) => v.approved)) {
+    s.reading = false;
+    s.hasFrame = false;
+  }
   p.ws?.close();
   p.pc?.close();
   p.video?.pause();
@@ -127,6 +133,7 @@ function peerLeft(s, id) {
 }
 async function connectRelay(s) {
   const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
+  s.address = address;
   $("relay").value = address;
   const events = {
     ready(code) {
@@ -191,6 +198,7 @@ async function connectRelay(s) {
         if (
           m.t === "input" &&
           p.control &&
+          s.hasFrame &&
           eligible(s) &&
           m.event &&
           s.local.readyState === 1
@@ -220,10 +228,12 @@ async function connectRelay(s) {
         p.control = m.control === true;
         $("joinbox").hidden = true;
         $("stage").hidden = false;
+        mobileView(true);
+        canvas.focus({ preventScroll: true });
         $("status").textContent = "已連線";
         say(
           p.control
-            ? "已獲准操作。可點選畫面後使用鍵盤、滑鼠或雙指捲動。"
+            ? "已獲准操作。點一下可操作該位置，雙指可捲動。"
             : "已獲准觀看。",
         );
         if (p.control)
@@ -263,17 +273,7 @@ function localSocket() {
   );
 }
 function eligible(s) {
-  const track = s.stream?.getVideoTracks()[0],
-    cap = s.cap;
-  if (!track || !cap?.control || track.readyState !== "live" || track.muted)
-    return false;
-  const { displaySurface, width, height } = track.getSettings();
-  return (
-    displaySurface === "monitor" &&
-    width > 0 &&
-    height > 0 &&
-    Math.abs(width / height / (cap.width / cap.height) - 1) < 0.015
-  );
+  return s.primary && s.cap?.control;
 }
 function request(s, p, name) {
   if (!name) return s.relay.drop(p.id);
@@ -300,7 +300,7 @@ function request(s, p, name) {
           await refreshDevices("save", {
             listen,
             dial,
-            address: $("relay").value.trim(),
+            address: s.address,
             name: p.name,
           });
           s.relay.remember(p.pair);
@@ -353,7 +353,8 @@ function renderRequest(s, p) {
   $("devices").append(row);
 }
 async function direct(s, p, offer) {
-  if (typeof RTCPeerConnection === "undefined" || p.pc) return;
+  if (typeof RTCPeerConnection === "undefined" || p.pc || (s.host && !s.stream))
+    return;
   const pc = (p.pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   }));
@@ -414,90 +415,118 @@ async function direct(s, p, offer) {
       sdp: pc.localDescription,
     });
 }
-function streamFallback(s) {
-  const c = document.createElement("canvas"),
-    v = document.createElement("video");
-  v.muted = true;
-  v.playsInline = true;
-  v.srcObject = s.stream;
-  v.play().catch(() => {});
-  let busy = false;
-  s.frames = setInterval(async () => {
-    for (const p of s.peers.values()) {
-      if (p.control && !eligible(s)) s.relay.drop(p.id);
-    }
-    const targets = [...s.peers.values()].filter(
-      (p) => p.approved && !p.direct,
-    );
-    if (busy || !targets.length || !v.videoWidth || v.readyState < 2) return;
-    busy = true;
-    try {
-      const scale = Math.min(1, 960 / Math.max(v.videoWidth, v.videoHeight));
-      c.width = Math.max(1, Math.round(v.videoWidth * scale));
-      c.height = Math.max(1, Math.round(v.videoHeight * scale));
-      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-      const b = await new Promise((resolve) =>
-        c.toBlob(resolve, "image/jpeg", 0.62),
-      );
-      if (b && b.size < 340000 && active === s) {
-        const data = new Uint8Array(await b.arrayBuffer());
-        for (const p of targets)
-          if (s.peers.get(p.id) === p && p.approved)
-            s.relay.send(p.id, 2, data);
-      }
-    } finally {
-      busy = false;
-    }
-  }, 140);
+function mobileView(on) {
+  const immersive =
+    on && (window.ViewerScreen || matchMedia("(pointer: coarse)").matches);
+  document.body.classList.toggle("remote-viewing", Boolean(immersive));
+  window.ViewerScreen?.setActive(Boolean(immersive));
 }
-$("start").onclick = async () => {
+function startCapture(s) {
+  const source = (s.source = document.createElement("canvas"));
+  source.width = source.height = 2;
+  s.stream = source.captureStream?.(30);
+  const fallback = document.createElement("canvas");
+  let nextRelayFrame = 0;
+  s.captureTimer = setInterval(() => {
+    if (
+      active !== s ||
+      s.reading ||
+      ![...s.peers.values()].some((p) => p.approved)
+    )
+      return;
+    s.reading = true;
+    s.local.send(JSON.stringify({ type: "primary-frame" }));
+  }, 40);
+  return async (data) => {
+    const image = await createImageBitmap(
+      new Blob([data], { type: "image/jpeg" }),
+    );
+    try {
+      if (active !== s || ![...s.peers.values()].some((p) => p.approved))
+        return;
+      if (source.width !== image.width || source.height !== image.height) {
+        source.width = image.width;
+        source.height = image.height;
+      }
+      source.getContext("2d").drawImage(image, 0, 0);
+      s.hasFrame = true;
+      const targets = [...s.peers.values()].filter(
+        (p) => p.approved && !p.direct,
+      );
+      if (!targets.length || performance.now() < nextRelayFrame) return;
+      nextRelayFrame = performance.now() + 120;
+      let jpeg = data;
+      if (data.byteLength >= 340000) {
+        const scale = Math.min(1, 960 / Math.max(image.width, image.height));
+        fallback.width = Math.max(1, Math.round(image.width * scale));
+        fallback.height = Math.max(1, Math.round(image.height * scale));
+        fallback
+          .getContext("2d")
+          .drawImage(image, 0, 0, fallback.width, fallback.height);
+        const blob = await new Promise((resolve) =>
+          fallback.toBlob(resolve, "image/jpeg", 0.62),
+        );
+        if (!blob || blob.size >= 340000) return;
+        jpeg = await blob.arrayBuffer();
+      }
+      for (const p of targets)
+        if (active === s && s.peers.get(p.id) === p)
+          s.relay.send(p.id, 2, new Uint8Array(jpeg));
+    } finally {
+      image.close();
+    }
+  };
+}
+function standby() {
   if (!token || active) return;
   const s = begin(true);
-  try {
-    s.stream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 60 },
-      },
-      audio: false,
-    });
-    if (active !== s) {
-      s.stream.getTracks().forEach((t) => t.stop());
-      return;
-    }
-    s.stream.getVideoTracks()[0].onended = () =>
-      closeSession(s, "畫面分享已停止。");
-    s.local = localSocket();
-    s.local.onopen = () =>
-      s.local.send(JSON.stringify({ type: "host", token }));
-    s.local.onmessage = async (e) => {
+  s.local = localSocket();
+  s.local.binaryType = "arraybuffer";
+  s.local.onopen = () => s.local.send(JSON.stringify({ type: "host", token }));
+  s.local.onmessage = async (e) => {
+    if (active !== s) return;
+    try {
+      if (e.data instanceof ArrayBuffer) {
+        try {
+          await s.frame(e.data);
+        } finally {
+          s.reading = false;
+        }
+        return;
+      }
       const m = JSON.parse(e.data);
       if (m.type === "hosted") {
         s.localCode = m.code;
         s.cap = m.capabilities;
-        streamFallback(s);
-        try {
-          await connectRelay(s);
-        } catch (err) {
-          closeSession(s, err.message);
-        }
+        s.primary = m.primaryCapture;
+        if (!s.primary) throw Error("請開啟新版桌面程式以連接主螢幕。");
+        s.frame = startCapture(s);
+        await connectRelay(s);
       }
+      if (m.type === "capture-error") throw Error(m.message);
+      if (m.type === "error" && !m.id) throw Error(m.message);
       if (m.type === "error" && m.id)
-        for (const p of s.peers.values()) {
+        for (const p of s.peers.values())
           if (p.localId === m.id) s.relay.drop(p.id);
-        }
-    };
-    s.local.onclose = () => closeSession(s, "本機分享服務已停止。");
-  } catch (err) {
-    closeSession(
-      s,
-      err.name === "NotAllowedError" ? "尚未授權擷取螢幕。" : err.message,
-    );
+    } catch (err) {
+      closeSession(s, err.message);
+    }
+  };
+  s.local.onclose = () => closeSession(s, "本機連線服務已停止。");
+}
+$("start").onclick = standby;
+$("relay").onchange = () => {
+  if (active?.host && !active.peers.size) {
+    closeSession(active, "");
+    standby();
   }
 };
 async function joinDevice(saved) {
-  if (active) return;
+  if (active?.host && !active.peers.size) closeSession(active, "");
+  if (active) {
+    say("請先結束目前的連線。");
+    return;
+  }
   const s = begin(false);
   try {
     localStorage.setItem("rc-name", $("name").value.trim() || defaultName);
@@ -533,3 +562,50 @@ $("stop").onclick = $("leave").onclick = () => {
 window.addEventListener("pagehide", () => {
   if (active) closeSession(active, "連線已結束。");
 });
+
+standby();
+
+if (token) {
+  async function update(action) {
+    const check = $("check-update"),
+      install = $("install-update"),
+      status = $("update-status");
+    if (action === "install" && active && (!active.host || active.peers.size)) {
+      status.textContent = "請先結束遠端連線，再安裝更新。";
+      return;
+    }
+    check.disabled = install.disabled = true;
+    status.textContent =
+      action === "check" ? "正在檢查版本…" : "正在下載並驗證安裝檔…";
+    try {
+      const response = await fetch("/api/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Host-Token": token },
+        body: JSON.stringify({ action }),
+      });
+      if ([404, 405].includes(response.status)) {
+        $("updates").hidden = true;
+        return;
+      }
+      const result = await response.json();
+      if (!response.ok) throw Error(result.error || "更新服務暫時無法使用。");
+      if (result.installing) {
+        status.textContent = "已開啟安裝程式。完成後請重新開啟遠端桌面。";
+        install.hidden = true;
+      } else {
+        status.textContent = result.available
+          ? "目前版本 " + result.current + "，可更新至 " + result.latest
+          : "目前版本 " + result.current + " 已是最新。";
+        install.hidden = !result.available;
+      }
+    } catch (err) {
+      status.textContent = "更新失敗，可再試一次。" + err.message;
+    } finally {
+      check.disabled = install.disabled = false;
+    }
+  }
+  $("updates").hidden = false;
+  $("check-update").onclick = () => update("check");
+  $("install-update").onclick = () => update("install");
+  update("check");
+}

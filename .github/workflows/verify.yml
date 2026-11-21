@@ -57,26 +57,34 @@ jobs:
           python -m pip install "pyinstaller>=6.12,<7"
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControlHost.exe
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging/RemoteControl.iss
       - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: Windows-desktop-host
-          path: dist/RemoteControlHost.exe
+          path: |
+            dist/RemoteControlHost.exe
+            dist/RemoteControl-Setup-Windows-x64.exe
           if-no-files-found: error
 
       - if: runner.os == 'macOS'
         name: Package and verify the Mac app
         run: |
+          mkdir -p build
+          swiftc -O -parse-as-library -target "$(uname -m)-apple-macos12.3" packaging/PrimaryDisplay.swift -o build/PrimaryDisplay
           python -m pip install "pyinstaller>=6.12,<7"
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
           codesign --verify --deep --strict dist/RemoteControl.app
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.4.0 "RemoteControl-macOS-$(uname -m).pkg"
           ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: Mac-host-${{ matrix.os }}
-          path: RemoteControl-macOS-*.zip
+          path: |
+            RemoteControl-macOS-*.zip
+            RemoteControl-macOS-*.pkg
           if-no-files-found: error
 
   android:

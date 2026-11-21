@@ -52,7 +52,8 @@ class Input(ct.Structure):
 
 
 class WindowsBackend:
-    def __init__(self):
+    def __init__(self, *, primary_only=False):
+        self.primary_only = primary_only
         from .win_curtain import PrivacyCurtain
 
         self.user = ct.WinDLL("user32", use_last_error=True)
@@ -66,11 +67,11 @@ class WindowsBackend:
         self._keys = set()
         self._buttons = set()
         self._wheel_pixels = [0.0, 0.0]
-        self.privacy_supported = sys.getwindowsversion().build >= 19041
+        self.privacy_supported = sys.getwindowsversion().build >= 19041 and not primary_only
         self._curtain = PrivacyCurtain()
 
     def geometry(self):
-        if self.user.GetSystemMetrics(80) != 1:  # SM_CMONITORS
+        if not self.primary_only and self.user.GetSystemMetrics(80) != 1:  # SM_CMONITORS
             raise RuntimeError("遠端控制需要一台啟用的螢幕")
         return self.user.GetSystemMetrics(0), self.user.GetSystemMetrics(1)
 

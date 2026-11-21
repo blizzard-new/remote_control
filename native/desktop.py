@@ -28,16 +28,16 @@ def validate_event(event):
 
 
 class Desktop:
-    def __init__(self):
+    def __init__(self, *, primary_only=False):
         self._backend = None
         self._failure = ""
         try:
             if sys.platform == "win32":
                 from .windows import WindowsBackend
-                self._backend = WindowsBackend()
+                self._backend = WindowsBackend(primary_only=primary_only)
             elif sys.platform == "darwin":
                 from .macos import MacBackend
-                self._backend = MacBackend()
+                self._backend = MacBackend(primary_only=primary_only)
             elif sys.platform.startswith("linux"):
                 from .x11 import X11Backend
                 self._backend = X11Backend()
