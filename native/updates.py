@@ -42,7 +42,8 @@ class GitHubRedirect(HTTPRedirectHandler):
 
 
 def fetch(url):
-    context = ssl.create_default_context(cafile=certifi.where())
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
     client = build_opener(HTTPSHandler(context=context), GitHubRedirect())
     return client.open(Request(url, headers={"User-Agent": "Uniway-RemoteControl/" + VERSION}), timeout=30)
 
