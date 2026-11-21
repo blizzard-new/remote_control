@@ -1,14 +1,14 @@
+import { HostChannels, findPin } from "./pairing.mjs";
+import { devices } from "./devices.mjs";
 import { attachInput } from "./input.mjs";
-import {
-  DEFAULT_RELAY,
-  newInvite,
-  Relay,
-  formatInvite,
-  parseInvite,
-} from "./relay.mjs";
+import { DEFAULT_RELAY, Relay, parseInvite } from "./relay.mjs";
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.hash.slice(1));
-const token = params.get("host");
+const suppliedToken = params.get("host");
+const reload = performance.getEntriesByType("navigation")[0]?.type === "reload";
+const token =
+  suppliedToken || (reload && sessionStorage.getItem("rc-host-token"));
+if (suppliedToken) sessionStorage.setItem("rc-host-token", suppliedToken);
 if (location.hash) history.replaceState(null, "", location.pathname);
 $("hostbox").hidden = !token;
 if (token) $("lan").href = "/#host=" + encodeURIComponent(token);
@@ -16,6 +16,42 @@ $("relay").value = localStorage.getItem("rc-relay") || DEFAULT_RELAY;
 const canvas = $("picture"),
   ctx = canvas.getContext("2d");
 let active = null;
+const defaultName = window.PhoneDevices
+  ? window.PhoneDevices.name()
+  : navigator.platform.includes("Mac")
+    ? "我的 Mac"
+    : "我的電腦";
+$("name").value = localStorage.getItem("rc-name") || defaultName;
+let contacts = [];
+async function refreshDevices(action, item) {
+  const loaded = await devices(token, action, item);
+  if (!Array.isArray(loaded)) throw Error("無法儲存配對，請先解除舊裝置。");
+  contacts = loaded;
+  const list = $("remembered");
+  list.replaceChildren();
+  for (const pair of contacts) {
+    const row = document.createElement("div");
+    const connect = document.createElement("button"),
+      forget = document.createElement("button");
+    connect.type = forget.type = "button";
+    connect.textContent = pair.name;
+    connect.onclick = () => joinDevice(pair);
+    forget.textContent = "解除配對";
+    forget.onclick = async () => {
+      if (!confirm("解除與「" + pair.name + "」的配對？")) return;
+      active?.relay?.forget?.(pair.listen);
+      try {
+        await refreshDevices("forget", pair);
+      } catch (err) {
+        say(err.message);
+      }
+    };
+    row.append(connect, forget);
+    list.append(row);
+  }
+  $("known").hidden = !contacts.length;
+}
+refreshDevices().catch((err) => say(err.message));
 const decoder = new TextDecoder();
 function say(value) {
   $("message").textContent = value;
@@ -23,6 +59,7 @@ function say(value) {
 function closeSession(s, message) {
   if (active !== s) return;
   active = null;
+  s.abort.abort();
   s.relay?.close();
   s.local?.close();
   s.stream?.getTracks().forEach((t) => t.stop());
@@ -46,8 +83,7 @@ function closeSession(s, message) {
   $("hostbox").hidden = !token;
   $("settings").hidden = false;
   $("invite").value = "";
-  $("invite").type = "password";
-  $("show").textContent = "顯示";
+
   $("devices").replaceChildren();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   $("status").textContent = "待命";
@@ -58,7 +94,7 @@ function begin(host) {
   const s = (active = {
     host,
     peers: new Map(),
-    invite: host ? newInvite() : $("code").value.trim(),
+    abort: new AbortController(),
   });
   $("status").textContent = "正在連線";
   $("joinbox").hidden = host;
@@ -89,26 +125,30 @@ function peerLeft(s, id) {
   p.row?.remove();
   if (active === s && !s.host) closeSession(s, "分享已結束。");
 }
-function connectRelay(s) {
+async function connectRelay(s) {
   const address = $("relay").value.trim();
-  s.relay = new Relay(address, s.host, s.invite, {
-    ready() {
+  const events = {
+    ready(code) {
       if (active !== s) return;
       clearTimeout(s.deadline);
       $("status").textContent = "等候連線";
       $("invitation").hidden = false;
-      $("invite").value = formatInvite(address, s.invite);
+      $("invite").value = code;
       say("將邀請碼交給另一台已安裝的裝置。");
     },
-    paired(id) {
+    paired(id, pair) {
       if (active !== s) return;
-      const p = { id, approved: false };
+      const p = { id, approved: false, pair };
       s.peers.set(id, p);
       p.timeout = setTimeout(() => s.relay.drop(id), 120000);
       if (!s.host) {
         clearTimeout(s.deadline);
         s.relay.json(id, { t: "request", name: $("name").value.trim() });
-        say("請等候分享端同意。");
+        say(
+          s.pair?.check
+            ? "請與分享端核對 " + s.pair.check + "，並等候同意。"
+            : "已向對方送出連線請求。",
+        );
       }
     },
     left(id) {
@@ -161,6 +201,19 @@ function connectRelay(s) {
           await p.pc.setRemoteDescription(m.sdp);
         else if (m.t === "direct") p.direct = m.on === true;
       } else if (m.t === "approved" && !p.approved) {
+        if (s.pair && !s.pair.saved && m.remembered) {
+          const { listen, dial } = s.pair;
+          try {
+            await refreshDevices("save", {
+              listen,
+              dial,
+              address,
+              name: safeText(m.name) || "已配對裝置",
+            });
+          } catch (err) {
+            say(err.message);
+          }
+        }
         clearTimeout(p.timeout);
         p.approved = true;
         p.control = m.control === true;
@@ -183,9 +236,16 @@ function connectRelay(s) {
         });
       }
     },
-  });
+  };
   localStorage.setItem("rc-relay", address);
-  return s.relay.start();
+  if (s.host) {
+    s.relay = new HostChannels(address, events);
+    await refreshDevices();
+    if (active === s) await s.relay.start(contacts);
+  } else {
+    s.relay = new Relay(address, false, s.invite, events);
+    await s.relay.start();
+  }
 }
 function paint(image, w, h) {
   if (canvas.width !== w || canvas.height !== h) {
@@ -220,7 +280,7 @@ function request(s, p, name) {
   p.ws = localSocket();
   p.ws.onopen = () =>
     p.ws.send(JSON.stringify({ type: "join", name, code: s.localCode }));
-  p.ws.onmessage = (e) => {
+  p.ws.onmessage = async (e) => {
     if (active !== s || !s.peers.has(p.id)) return;
     const m = JSON.parse(e.data);
     if (m.type === "pending") {
@@ -232,7 +292,28 @@ function request(s, p, name) {
       p.control = m.control;
       p.approved = true;
       renderRequest(s, p);
-      s.relay.json(p.id, { t: "approved", control: p.control });
+      let remembered = !!p.pair?.saved;
+      if (p.pair && !remembered) {
+        const { listen, dial } = p.pair;
+        try {
+          await refreshDevices("save", {
+            listen,
+            dial,
+            address: $("relay").value.trim(),
+            name: p.name,
+          });
+          s.relay.remember(p.pair);
+          remembered = true;
+        } catch (err) {
+          say(err.message);
+        }
+      }
+      s.relay.json(p.id, {
+        t: "approved",
+        control: p.control,
+        remembered,
+        name: $("name").value.trim() || defaultName,
+      });
       direct(s, p).catch(() => {
         p.pc?.close();
         p.pc = null;
@@ -247,7 +328,9 @@ function renderRequest(s, p) {
   const row = (p.row = document.createElement("div"));
   row.className = "card device";
   const name = document.createElement("strong");
-  name.textContent = p.name;
+  name.textContent = p.pair?.saved
+    ? p.pair.name + "（已配對）"
+    : p.name + (p.pair?.check ? " · 核對 " + p.pair.check : "");
   row.append(name);
   const button = (label, fn) => {
     const b = document.createElement("button");
@@ -412,32 +495,37 @@ $("start").onclick = async () => {
     );
   }
 };
-$("join").onsubmit = async (e) => {
-  e.preventDefault();
+async function joinDevice(saved) {
   if (active) return;
+  const s = begin(false);
   try {
-    const parsed = parseInvite($("code").value, $("relay").value.trim());
-    $("relay").value = parsed.address;
-    const s = begin(false);
-    s.invite = parsed.invite;
-    try {
-      await connectRelay(s);
-    } catch (err) {
-      closeSession(s, err.message);
+    localStorage.setItem("rc-name", $("name").value.trim() || defaultName);
+    const value = $("code").value.trim();
+    if (saved) {
+      $("relay").value = saved.address;
+      s.pair = { ...saved, saved: true };
+    } else if (/^[0-9]{4}$/.test(value)) {
+      s.pair = await findPin($("relay").value.trim(), value, s.abort.signal);
+    } else {
+      const parsed = parseInvite(value, $("relay").value.trim());
+      $("relay").value = parsed.address;
+      s.invite = parsed.invite;
     }
+    if (active !== s) return;
+    if (s.pair) s.invite = s.pair.dial;
+    await connectRelay(s);
   } catch (err) {
-    say(err.message);
+    closeSession(s, err.message);
   }
-};
-$("show").onclick = () => {
-  const hidden = $("invite").type === "password";
-  $("invite").type = hidden ? "text" : "password";
-  $("show").textContent = hidden ? "隱藏" : "顯示";
+}
+$("join").onsubmit = (e) => {
+  e.preventDefault();
+  joinDevice();
 };
 $("copy").onclick = () =>
   navigator.clipboard
     .writeText($("invite").value)
-    .catch(() => say("請按「顯示」後手動複製邀請碼。"));
+    .catch(() => say("請手動輸入畫面上的四位數。"));
 $("stop").onclick = $("leave").onclick = () => {
   if (active) closeSession(active, "連線已結束。");
 };

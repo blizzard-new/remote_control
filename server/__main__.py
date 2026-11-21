@@ -63,7 +63,8 @@ def main(argv=None, *, on_ready=None, online_socket=None):
     desktop = Desktop()
     if args.request_control:
         print(desktop.request_control(), flush=True)
-    app = create_app(token, desktop, ice)
+    from .pairings import device_store
+    app = create_app(token, desktop, ice, device_store=device_store() if online_socket is not None else None)
     domain = "localhost" if args.bind in {"0.0.0.0", "::", "localhost", "127.0.0.1", "::1"} else args.bind
     if ":" in domain:
         domain = f"[{domain}]"

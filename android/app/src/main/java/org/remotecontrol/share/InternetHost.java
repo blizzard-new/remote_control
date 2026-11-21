@@ -22,11 +22,13 @@ import okhttp3.WebSocketListener;
 import okio.ByteString;
 import org.json.JSONObject;
 
-/** An attended, view-only Android capture session. Keys stay on the devices. */
+/** An attended Android capture session. Keys stay on the devices. */
 final class InternetHost extends WebSocketListener implements AutoCloseable {
   static final String DEFAULT = "https://remote.uniway-tw.com";
   private static final SecureRandom random = new SecureRandom();
-  private final byte[] seed = randomBytes(24);
+  private final byte[] seed;
+  private final Runnable onReady;
+  private final boolean ownsClient;
   private final Map<Integer, Peer> peers = new LinkedHashMap<>();
   private final OkHttpClient client;
   private final Consumer<String> stopped;
@@ -40,7 +42,20 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   }
 
   InternetHost(String address, Consumer<String> stopped, OkHttpClient client) {
+    this(address, stopped, client, randomBytes(24), () -> {}, true);
+  }
+
+  InternetHost(
+      String address,
+      Consumer<String> stopped,
+      OkHttpClient client,
+      byte[] seed,
+      Runnable onReady,
+      boolean ownsClient) {
     this.client = client;
+    this.seed = seed;
+    this.onReady = onReady;
+    this.ownsClient = ownsClient;
     URI uri = URI.create(address);
     if (!"https".equalsIgnoreCase(uri.getScheme())
         || uri.getHost() == null
@@ -80,17 +95,24 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   }
 
   synchronized void decide(int id, boolean allow) {
+    decide(id, allow, false, false);
+  }
+
+  synchronized void decide(int id, boolean allow, boolean control, boolean remembered) {
     Peer p = peers.get(id);
     if (p == null || p.name == null || p.approved) return;
     try {
       if (allow) {
         p.approved = true;
+        p.control = control && PhoneControl.claim(p);
         send(
             p,
             1,
             new JSONObject()
                 .put("t", "approved")
-                .put("control", false)
+                .put("control", p.control)
+                .put("name", android.os.Build.MODEL)
+                .put("remembered", remembered)
                 .toString()
                 .getBytes(StandardCharsets.UTF_8));
         if (latestFrame != null) send(p, 2, latestFrame);
@@ -133,11 +155,13 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
       String t = m.getString("t");
       if (t.equals("ready")) {
         ready = true;
+        onReady.run();
         return;
       }
       int id = (int) m.getLong("id");
       if (t.equals("left")) {
-        peers.remove(id);
+        Peer old = peers.remove(id);
+        if (old != null) PhoneControl.release(old);
         return;
       }
       if (!t.equals("join") || peers.size() >= 8 || peers.containsKey(id)) return;
@@ -181,6 +205,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
           return;
         }
         p.name = name;
+      } else if (p.approved && p.control && "input".equals(m.optString("t"))) {
+        PhoneControl.input(p, m.optJSONObject("event"));
       }
     } catch (Exception e) {
       drop(id);
@@ -206,7 +232,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   }
 
   private void drop(int id) {
-    peers.remove(id);
+    Peer removed = peers.remove(id);
+    if (removed != null) PhoneControl.release(removed);
     try {
       socket.send(
           new JSONObject().put("t", "drop").put("id", Integer.toUnsignedLong(id)).toString());
@@ -229,10 +256,13 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     closed = true;
     ready = false;
     latestFrame = null;
+    for (Peer peer : peers.values()) PhoneControl.release(peer);
     peers.clear();
     if (socket != null) socket.cancel();
-    client.dispatcher().executorService().shutdown();
-    client.connectionPool().evictAll();
+    if (ownsClient) {
+      client.dispatcher().executorService().shutdown();
+      client.connectionPool().evictAll();
+    }
   }
 
   private static final class Peer {
@@ -240,7 +270,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     final int id;
     final byte[] tx, rx;
     long outgoing, incoming;
-    boolean approved;
+    boolean approved, control;
     String name;
 
     Peer(int id, byte[] tx, byte[] rx) {

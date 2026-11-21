@@ -17,24 +17,24 @@
     <main>
       <h1>跨網路連線</h1>
       <p id="message" class="intro" role="status">
-        在要分享的裝置取得邀請碼，再從另一台裝置輸入。
+        第一次輸入對方的四位數配對碼。連過的裝置可直接點選。
       </p>
       <div class="host-grid">
         <section id="hostbox" class="card" hidden>
           <h2>分享這台電腦</h2>
-          <button class="primary" id="start">選擇畫面並取得邀請碼</button>
+          <button class="primary" id="start">分享螢幕並顯示四碼</button>
           <div hidden id="invitation">
-            <label for="invite">本次邀請碼</label>
+            <label for="invite">四位數配對碼</label>
             <div class="invite-row">
-              <input id="invite" readonly type="password" /><button
+              <input id="invite" readonly aria-label="四位數配對碼" /><button
                 class="secondary"
-                id="show"
+                id="copy"
               >
-                顯示</button
-              ><button class="secondary" id="copy">複製</button>
+                複製
+              </button>
             </div>
             <p class="field-hint">
-              將邀請碼交給對方。收到請求後，請在這裡決定是否同意。
+              請在另一台裝置輸入這四碼，核對兩邊顯示的識別字串後同意。配對碼每五分鐘更新。
             </p>
           </div>
           <div id="devices" class="devices"></div>
@@ -43,14 +43,20 @@
         </section>
         <section class="card" id="joinbox">
           <h2>連接另一台裝置</h2>
+          <section id="known" hidden>
+            <h3>已配對裝置</h3>
+            <div id="remembered"></div>
+          </section>
           <form id="join">
             <label for="name">這台裝置的名稱</label
             ><input id="name" required maxlength="48" value="我的裝置" /><label
               for="code"
-              >對方提供的邀請碼</label
+              >對方的四位數配對碼</label
             ><input
               required
               id="code"
+              inputmode="numeric"
+              placeholder="0000"
               autocomplete="off"
               autocapitalize="none"
               spellcheck="false"

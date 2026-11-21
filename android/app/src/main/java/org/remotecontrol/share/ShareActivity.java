@@ -28,8 +28,9 @@ public final class ShareActivity extends Activity {
     private android.widget.EditText relay;
     private LinearLayout pending;
     private Button copyInvite;
-    private java.util.Map<Integer,String> rendered = new java.util.LinkedHashMap<>();
-    private boolean prompting;
+    private java.util.Map<String,String> rendered = new java.util.LinkedHashMap<>();
+    private boolean prompting, renderedControl;
+    private Button enable;
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
@@ -49,13 +50,14 @@ public final class ShareActivity extends Activity {
         Button viewer = new Button(this);
         viewer.setText("連接電腦（鍵盤觸控板模式）");
         viewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class)));
-        page.addView(viewer);
+
         Button onlineViewer=new Button(this);
-        onlineViewer.setText("跨網路連接另一台裝置");
+        onlineViewer.setText("控制電腦或其他裝置");
         onlineViewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class).putExtra("online",true)));
         page.addView(onlineViewer);
+
         TextView shareHeading = new TextView(this);
-        shareHeading.setText("分享 Android 螢幕");
+        shareHeading.setText("讓電腦連到這台手機");
         shareHeading.setTextSize(20);
         shareHeading.setPadding(0, padding, 0, 0);
         page.addView(shareHeading);
@@ -67,21 +69,28 @@ public final class ShareActivity extends Activity {
         highQuality = new CheckBox(this);
         highQuality.setText("高畫質 H.264（目標 30 fps，需支援 WebCodecs 的瀏覽器）");
         highQuality.setChecked(savedState == null || savedState.getBoolean("highQuality", true));
-        page.addView(highQuality);
+
         internetMode=new android.widget.Switch(this);
         internetMode.setText("跨網路分享（行動網路或 Wi-Fi）");
-        internetMode.setChecked(savedState != null && savedState.getBoolean("internet"));
-        page.addView(internetMode);
+        internetMode.setChecked(savedState == null || savedState.getBoolean("internet", true));
+
+        enable=new Button(this);
+        enable.setText("啟用手機觸控操作（第一次設定）");
+        enable.setOnClickListener(v -> new android.app.AlertDialog.Builder(this).setTitle("允許電腦操作手機")
+            .setMessage("在無障礙設定開啟「遠端桌面觸控操作」。回來分享整個螢幕，再對連線按「允許操作」。")
+            .setPositiveButton("前往設定",(dialog,which)->startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+            .setNegativeButton("取消",null).show());
+        page.addView(enable);
         relay=new android.widget.EditText(this);
         relay.setSingleLine(); relay.setHint("配對服務 HTTPS 網址");
         relay.setText(getPreferences(MODE_PRIVATE).getString("relay", InternetHost.DEFAULT));
-        page.addView(relay);
+
         pending=new LinearLayout(this);pending.setOrientation(LinearLayout.VERTICAL);
-        copyInvite=new Button(this);copyInvite.setText("複製跨網路邀請碼");
+        copyInvite=new Button(this);copyInvite.setText("複製四位數配對碼");
         copyInvite.setOnClickListener(v -> {
-            InternetHost host=CaptureService.online;
+            PhoneShare host=CaptureService.online;
             if(host!=null && !host.invitation().isEmpty()) getSystemService(android.content.ClipboardManager.class)
-                .setPrimaryClip(android.content.ClipData.newPlainText("本次邀請碼",host.invitation()));
+                .setPrimaryClip(android.content.ClipData.newPlainText("四位數配對碼",host.invitation()));
         });
         page.addView(copyInvite);page.addView(pending);
         start = new Button(this);
@@ -106,13 +115,21 @@ public final class ShareActivity extends Activity {
         stop.setText("停止分享並中斷所有觀看者");
         stop.setOnClickListener(v -> stopService(new Intent(this, CaptureService.class)));
         page.addView(stop);
+        Button more=new Button(this);more.setText("進階連線設定");page.addView(more);
+        LinearLayout options=new LinearLayout(this);options.setOrientation(LinearLayout.VERTICAL);
+        options.addView(internetMode);options.addView(relay);options.addView(highQuality);options.addView(viewer);
+        options.setVisibility(View.GONE);page.addView(options);
+        more.setOnClickListener(v->options.setVisibility(options.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE));
         scroll.addView(page);
         setContentView(scroll);
     }
 
     private void askProjection() {
         MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
-        startActivityForResult(manager.createScreenCaptureIntent(), SHARE);
+        Intent request=Build.VERSION.SDK_INT>=34 && internetMode.isChecked()
+            ?manager.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+            :manager.createScreenCaptureIntent();
+        startActivityForResult(request, SHARE);
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
@@ -144,21 +161,28 @@ public final class ShareActivity extends Activity {
         @Override public void run() {
             CaptureService.Status status = CaptureService.status;
             if (!details.getText().toString().equals(status.text)) details.setText(status.text);
+            enable.setVisibility(PhoneControl.enabled()?View.GONE:View.VISIBLE);
             start.setEnabled(!prompting && !status.running);
             internetMode.setEnabled(!prompting && !status.running);
             relay.setVisibility(internetMode.isChecked() && !status.running ? View.VISIBLE : View.GONE);
             highQuality.setEnabled(!internetMode.isChecked() && !prompting && !status.running);
-            InternetHost host=CaptureService.online;
+            PhoneShare host=CaptureService.online;
             copyInvite.setVisibility(host!=null && !host.invitation().isEmpty() ? View.VISIBLE : View.GONE);
-            java.util.Map<Integer,String> requests=host==null ? java.util.Collections.emptyMap() : host.pending();
-            if(!requests.equals(rendered)) {
+            java.util.Map<String,String> requests=host==null ? java.util.Collections.emptyMap() : host.pending();
+            boolean canControl=PhoneControl.available();
+            if(!requests.equals(rendered) || canControl!=renderedControl) {
+                renderedControl=canControl;
                 rendered=requests; pending.removeAllViews();
-                for(java.util.Map.Entry<Integer,String> entry:requests.entrySet()) {
-                    int id=entry.getKey();
-                    TextView name=new TextView(ShareActivity.this);name.setText(entry.getValue()+" 請求觀看");pending.addView(name);
+                for(java.util.Map.Entry<String,String> entry:requests.entrySet()) {
+                    String id=entry.getKey();
+                    TextView name=new TextView(ShareActivity.this);name.setText(entry.getValue()+" 請求連線");pending.addView(name);
+                    if(canControl) {
+                        Button control=new Button(ShareActivity.this);control.setText("允許操作");
+                        control.setOnClickListener(v -> { host.decide(id,true,true); moveTaskToBack(true); });pending.addView(control);
+                    }
                     for(boolean allow:new boolean[]{true,false}) {
                         Button decision=new Button(ShareActivity.this);decision.setText(allow?"允許觀看":"拒絕");
-                        decision.setOnClickListener(v -> host.decide(id,allow));pending.addView(decision);
+                        decision.setOnClickListener(v -> host.decide(id,allow,false));pending.addView(decision);
                     }
                 }
             }

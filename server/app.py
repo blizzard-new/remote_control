@@ -288,9 +288,24 @@ async def headers(request, handler):
     return response
 
 
-def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR):
+def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_store=None):
     room = Room(token, desktop, ice_servers or [])
     app = web.Application(middlewares=[headers])
+    if device_store is not None:
+        from .pairings import update
+        async def paired_devices(request):
+            if (not is_loopback(request.remote) or request.headers.get("Origin") != f"{request.scheme}://{request.host}"
+                    or not matches(request.headers.get("X-Host-Token"), token)):
+                raise web.HTTPForbidden()
+            try:
+                data = await request.json()
+                if not isinstance(data, dict):
+                    raise ValueError("裝置資料無效")
+                devices = await asyncio.to_thread(update, device_store, data.get("action"), data.get("item", {}))
+            except ValueError as error:
+                raise web.HTTPBadRequest(text=str(error))
+            return web.json_response(devices)
+        app.router.add_post("/api/paired", paired_devices)
     app.router.add_get("/ws", room.websocket)
     async def index(_):
         return web.FileResponse(web_dir / "index.html")

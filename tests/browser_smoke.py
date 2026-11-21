@@ -4,6 +4,8 @@ from contextlib import AsyncExitStack
 import json
 import os
 import secrets
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from aiohttp.test_utils import TestServer
@@ -189,8 +191,11 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
         from relay.__main__ import create_app as relay_app
         desktop = RecordingDesktop()
         secret = secrets.token_urlsafe(32)
-        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop)) as sharing, \
-                TestServer(create_app("viewer-only", RecordingDesktop())) as viewing, async_playwright() as pw:
+        state = TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        host_db, viewer_db = (Path(state.name) / n for n in ("host.db","viewer.db"))
+        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db)) as sharing, \
+                TestServer(create_app("viewer-only", RecordingDesktop(), device_store=viewer_db)) as viewing, async_playwright() as pw:
             browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
                 args=["--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
             try:
@@ -205,8 +210,11 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await host.locator("#start").click()
                 await expect(host.locator("#invitation")).to_be_visible()
                 invite = await host.locator("#invite").input_value()
-                self.assertTrue(invite.startswith("rc1."))
-                await viewer.goto(str(viewing.make_url("/online.html")))
+                self.assertRegex(invite, r"^[0-9]{4}$")
+                await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await viewer.locator("#settings summary").click()
+                await viewer.locator("#relay").fill(str(relay.make_url("/")).rstrip("/"))
+                await viewer.locator("#name").fill("測試平板")
                 await viewer.locator("#code").fill(invite)
                 await viewer.locator("#connect").click()
                 await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
@@ -223,5 +231,29 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await host.locator("#stop").click()
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 await asyncio.wait_for(desktop.released.wait(),timeout=5)
+                # Start a fresh session after reloading both dashboards and reconnect by name.
+                await host.goto("about:blank")
+                await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
+                await viewer.goto("about:blank")
+                await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await host.locator("#start").click()
+                await expect(host.locator("#invitation")).to_be_visible()
+                await expect(viewer.locator("#code")).to_have_value("")
+                await viewer.locator("#remembered button").first.click()
+                await expect(host.get_by_text("測試平板（已配對）")).to_be_visible()
+                await host.get_by_role("button",name="允許觀看").click()
+                await expect(viewer.locator("#stage")).to_be_visible()
+                await host.locator("#stop").click()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                # The same pairing also works in reverse without entering a new PIN.
+                await viewer.goto("about:blank")
+                await viewer.add_init_script(CANVAS_CAPTURE)
+                await viewer.goto(str(viewing.make_url("/online.html")) + "#host=viewer-only")
+                await viewer.locator("#start").click()
+                await expect(viewer.locator("#invitation")).to_be_visible()
+                await host.locator("#remembered button").first.click()
+                await viewer.get_by_role("button",name="允許觀看").click()
+                await expect(host.locator("#stage")).to_be_visible()
+
             finally:
                 await browser.close()

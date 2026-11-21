@@ -67,6 +67,9 @@ public final class ProjectionSmokeTest {
             String previous = null;
             for (boolean avc : new boolean[]{false, true}) {
                 showHost();
+                if (!device.hasObject(By.clazz("android.widget.Switch"))) visible(By.text("進階連線設定")).click();
+                UiObject2 internet = visible(By.clazz("android.widget.Switch"));
+                if (internet.isChecked()) internet.click();
                 UiObject2 quality = visible(By.clazz("android.widget.CheckBox"));
                 if (quality.isChecked() != avc) quality.click();
                 visible(By.text("選擇分享畫面")).click();

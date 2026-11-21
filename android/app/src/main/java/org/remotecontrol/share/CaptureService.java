@@ -43,7 +43,7 @@ public final class CaptureService extends Service {
         final String text;
         Status(boolean running, String text) { this.running = running; this.text = text; }
     }
-    static volatile Status status = new Status(false, "讓同一個 Wi-Fi 或私人 VPN 上的電腦看見你的畫面。每次分享都會產生新的配對碼。");
+    static volatile Status status = new Status(false, "讓電腦連到這台手機，或用手機操作另一台電腦。");
     private static final String CHANNEL = "screen-share";
     private static final String STOP = "stop-share";
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -56,8 +56,8 @@ public final class CaptureService extends Service {
     private AvcEncoder encoder;
     private int encodedSourceWidth, encodedSourceHeight;
     private ScreenServer server;
-    static volatile InternetHost online;
-    private InternetHost internet;
+    static volatile PhoneShare online;
+    private PhoneShare internet;
     private String internetAddress;
     private ConnectivityManager.NetworkCallback networkCallback;
     private Bitmap bitmap;
@@ -122,7 +122,7 @@ public final class CaptureService extends Service {
     private void begin(Intent consent) throws Exception {
         if (destroyed) return;
         if (internetAddress != null) {
-            internet = new InternetHost(internetAddress, this::stopWith);
+            internet = new PhoneShare(this, internetAddress, this::stopWith);
             online = internet;
             beginProjection(consent);
             internet.start();
@@ -238,6 +238,7 @@ public final class CaptureService extends Service {
 
     private void resize(int sourceWidth, int sourceHeight) {
         if (sourceWidth <= 0 || sourceHeight <= 0) return;
+        if(internet!=null) PhoneControl.captureSize(sourceWidth,sourceHeight);
         if (highQuality) {
             if (encoder != null && sourceWidth == encodedSourceWidth && sourceHeight == encodedSourceHeight) return;
             if (encoder != null) {
@@ -309,6 +310,7 @@ public final class CaptureService extends Service {
     }
 
     private void stopWith(String message) {
+        PhoneControl.releaseAll();PhoneControl.captureSize(0,0);
         main.post(() -> {
             if (destroyed) return;
             endReason = message;
@@ -318,6 +320,7 @@ public final class CaptureService extends Service {
 
     @Override public void onDestroy() {
         destroyed = true;
+        PhoneControl.releaseAll(); PhoneControl.captureSize(0,0);
         status = new Status(false, endReason);
         main.removeCallbacksAndMessages(null);
         worker.postAtFrontOfQueue(() -> {

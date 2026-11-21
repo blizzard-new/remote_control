@@ -1,0 +1,4 @@
+<resources>
+    <string name="phone_control_label">遠端桌面觸控操作</string>
+    <string name="phone_control_description">將你已核准的電腦點擊、拖曳及捲動轉成手機觸控手勢。操作需要你開啟螢幕分享並按「允許操作」。隨時可從分享通知停止。</string>
+</resources>

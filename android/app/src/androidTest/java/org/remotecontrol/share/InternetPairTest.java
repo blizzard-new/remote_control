@@ -39,8 +39,22 @@ public class InternetPairTest {
     return c.doFinal(message);
   }
 
+  interface Connected {
+    void run(WebSocket ws, byte[] viewKey) throws Exception;
+  }
+
+  static void sendEvent(WebSocket ws, byte[] key, int sequence, JSONObject event) throws Exception {
+    JSONObject input = new JSONObject().put("t", "input").put("event", event);
+    byte[] packet = crypt(Cipher.ENCRYPT_MODE, key, sequence, ("\001" + input).getBytes(UTF8));
+    ws.send(ByteString.of(ByteBuffer.allocate(4 + packet.length).putInt(7).put(packet).array()));
+  }
+
   @Test
   public void androidHostAuthenticatesAndSendsFramesOnlyAfterConsent() throws Exception {
+    exerciseHost(false, (ws, key) -> {});
+  }
+
+  static void exerciseHost(boolean control, Connected connected) throws Exception {
     HeldCertificate cert =
         new HeldCertificate.Builder()
             .commonName("localhost")
@@ -115,13 +129,17 @@ public class InternetPairTest {
         byte[] frame = {4, 1, 2, 3};
         host.publish(frame);
         assertNull(binary.poll(200, TimeUnit.MILLISECONDS));
-        host.decide(7, true);
+        host.decide(7, true, control, true);
         byte[] approved = binary.poll(5, TimeUnit.SECONDS).toByteArray();
         byte[] clear =
             crypt(Cipher.DECRYPT_MODE, share, 0, Arrays.copyOfRange(approved, 4, approved.length));
         assertEquals(
             "approved",
             new JSONObject(new String(clear, 1, clear.length - 1, UTF8)).getString("t"));
+        assertEquals(
+            control,
+            new JSONObject(new String(clear, 1, clear.length - 1, UTF8)).getBoolean("control"));
+        connected.run(ws, view);
         byte[] packet = binary.poll(5, TimeUnit.SECONDS).toByteArray();
         assertArrayEquals(
             new byte[] {2, 4, 1, 2, 3},

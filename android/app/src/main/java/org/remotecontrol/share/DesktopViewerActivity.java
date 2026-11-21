@@ -66,6 +66,7 @@ public final class DesktopViewerActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        if (bundled) view.addJavascriptInterface(new PhoneDevices(this), "PhoneDevices");
         settings.setSupportZoom(false);
         settings.setSupportMultipleWindows(false);
         view.setWebViewClient(new WebViewClient() {
@@ -75,9 +76,9 @@ public final class DesktopViewerActivity extends Activity {
             @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
                 if (bundled && DesktopOrigin.matches(origin,request.getUrl().toString())) {
                     String path=request.getUrl().getPath();
-                    if(path!=null && path.matches("/(online\\.html|style\\.css|online\\.mjs|relay\\.mjs|input\\.mjs)")) {
+                    if(path!=null && path.matches("/(online\\.html|style\\.css|online\\.mjs|relay\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)")) {
                         String mime=path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":"text/javascript";
-                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.emptyMap(),
+                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.singletonMap("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src wss:; media-src blob:; img-src data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'"),
                                 getAssets().open(path.substring(1))); }
                         catch(java.io.IOException unavailable) { /* fall through to the denied response */ }
                     }
