@@ -45,6 +45,14 @@ jobs:
           python -m playwright install --with-deps chromium
           python -m unittest discover -s tests -p browser_smoke.py -v
       - if: runner.os == 'Windows'
+        name: Check relay installer syntax
+        shell: pwsh
+        run: |
+          $syntaxErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'deploy/Install-Relay.ps1'), [ref]$null, [ref]$syntaxErrors)
+          if ($syntaxErrors) { throw ($syntaxErrors -join [Environment]::NewLine) }
+      - if: runner.os == 'Windows'
         run: |
           python -m pip install "pyinstaller>=6.12,<7"
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec

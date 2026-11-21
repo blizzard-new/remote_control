@@ -1,3 +1,4 @@
+name: uniway-remote-control
 services:
   remote-relay:
     build:
