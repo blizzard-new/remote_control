@@ -30,6 +30,7 @@ public final class ShareActivity extends Activity {
     private Button copyInvite;
     private java.util.Map<String,String> rendered = new java.util.LinkedHashMap<>();
     private boolean prompting, renderedControl;
+    private int previousViewers = -1;
     private Button enable;
     private AppUpdates updates;
 
@@ -171,6 +172,9 @@ public final class ShareActivity extends Activity {
             relay.setVisibility(internetMode.isChecked() && !status.running ? View.VISIBLE : View.GONE);
             highQuality.setEnabled(!internetMode.isChecked() && !prompting && !status.running);
             PhoneShare host=CaptureService.online;
+            int count = host == null ? 0 : host.viewers();
+            if (previousViewers == 0 && count > 0 && status.running && hasWindowFocus()) moveTaskToBack(true);
+            previousViewers = count;
             copyInvite.setVisibility(host!=null && !host.invitation().isEmpty() ? View.VISIBLE : View.GONE);
             java.util.Map<String,String> requests=host==null ? java.util.Collections.emptyMap() : host.pending();
             boolean canControl=PhoneControl.available();
@@ -204,6 +208,7 @@ public final class ShareActivity extends Activity {
     @Override protected void onDestroy() { updates.close(); super.onDestroy(); }
 
     @Override protected void onPause() {
+        previousViewers = -1;
         main.removeCallbacks(refresh);
         super.onPause();
     }

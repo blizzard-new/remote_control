@@ -95,6 +95,10 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     return count;
   }
 
+  synchronized boolean requestedControl(int id) {
+    Peer peer = peers.get(id);
+    return peer != null && !peer.viewOnly;
+  }
   synchronized void decide(int id, boolean allow) {
     decide(id, allow, false, false);
   }
@@ -140,6 +144,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     if (now-windowStart >= 1000) {windowStart=now; windowBytes=0;}
     for (Peer p : peers.values().toArray(new Peer[0])) {
       if (!p.approved || !p.avc) continue;
+      if (packet.length > 375000 && key) {p.avc=false; continue;}
       if (packet.length > 375000 || socket.queueSize() > 420000 || windowBytes+packet.length > 3700000) {
         p.needsKey = true; continue;
       }

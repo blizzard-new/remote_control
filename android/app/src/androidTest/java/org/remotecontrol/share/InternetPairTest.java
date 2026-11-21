@@ -54,7 +54,14 @@ public class InternetPairTest {
     exerciseHost(false, (ws, key) -> {});
   }
 
+  @Test public void trustedViewerReconnectsWithItsSavedAccessAndNegotiatesVideo() throws Exception {
+    exerciseHost(false, (ws,key) -> {}, true);
+  }
+
   static void exerciseHost(boolean control, Connected connected) throws Exception {
+    exerciseHost(control,connected,false);
+  }
+  static void exerciseHost(boolean control, Connected connected, boolean trusted) throws Exception {
     HeldCertificate cert =
         new HeldCertificate.Builder()
             .commonName("localhost")
@@ -100,6 +107,7 @@ public class InternetPairTest {
               .build();
       try (InternetHost host =
           new InternetHost(server.url("/").toString(), ignored -> {}, client)) {
+        if (trusted) host.grant = "view";
         host.start();
         WebSocket ws = sockets.poll(8, TimeUnit.SECONDS);
         assertNotNull(ws);
@@ -122,8 +130,24 @@ public class InternetPairTest {
                 Cipher.ENCRYPT_MODE,
                 view,
                 0,
-                "\001{\"t\":\"request\",\"name\":\"tablet\"}".getBytes(UTF8));
+                ("\001" + new JSONObject().put("t","request").put("name","tablet")
+                    .put("avc",trusted).put("fps",60).put("edge",1280)).getBytes(UTF8));
         ws.send(ByteString.of(ByteBuffer.allocate(4 + req.length).putInt(7).put(req).array()));
+        if (trusted) {
+          byte[] ready = binary.poll(5,TimeUnit.SECONDS).toByteArray();
+          byte[] data = crypt(Cipher.DECRYPT_MODE,share,0,Arrays.copyOfRange(ready,4,ready.length));
+          JSONObject accepted = new JSONObject(new String(data,1,data.length-1,UTF8));
+          assertEquals("approved",accepted.getString("t"));
+          assertFalse(accepted.getBoolean("control"));
+          assertTrue(host.pending().isEmpty());
+          assertEquals(128060,host.codecProfile());
+          host.video(false,new byte[]{0,5});
+          assertNull(binary.poll(100,TimeUnit.MILLISECONDS));
+          host.video(true,new byte[]{1,5});
+          byte[] keyframe=binary.poll(5,TimeUnit.SECONDS).toByteArray();
+          assertArrayEquals(new byte[]{3,1,5},crypt(Cipher.DECRYPT_MODE,share,1,Arrays.copyOfRange(keyframe,4,keyframe.length)));
+          return;
+        }
         for (int i = 0; i < 80 && host.pending().isEmpty(); i++) Thread.sleep(50);
         assertEquals("tablet", host.pending().get(7));
         byte[] frame = {4, 1, 2, 3};

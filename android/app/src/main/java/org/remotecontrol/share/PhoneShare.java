@@ -135,6 +135,7 @@ final class PhoneShare implements AutoCloseable {
     int viewer = Integer.parseInt(parts[1]);
     String name = c.host.pending().get(viewer);
     if (name == null) return;
+    control = control && c.host.requestedControl(viewer);
     if (allow && c.host.grant.isEmpty()) {
       try {
         c.pair.put("name", name).put("address", address).put("grant", control ? "control" : "view");
