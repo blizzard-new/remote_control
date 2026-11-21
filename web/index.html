@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f7f3">
+  <title>遠端桌面</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <span class="brand"><span class="mark" aria-hidden="true"></span>遠端桌面</span>
+      <span id="status" class="status" role="status">待命</span>
+    </div>
+  </header>
+  <main>
+    <div id="notice" class="notice" role="alert" hidden></div>
+    <section id="viewer">
+      <div id="join-layout" class="entry">
+        <div>
+          <p class="section-label">觀看端</p>
+          <h1>連線到電腦</h1>
+          <p class="intro">輸入分享端顯示的連線碼。對方同意後，你就能看到畫面。</p>
+          <details class="help">
+            <summary>想從電腦觀看 Android 畫面？</summary>
+            <p>在手機或平板開啟 Android 分享程式，依程式內顯示的網址，從同一區網的電腦瀏覽器連線。</p>
+          </details>
+        </div>
+        <form id="join-form" class="card">
+          <label for="name">裝置名稱</label>
+          <input id="name" name="name" maxlength="48" autocomplete="off" placeholder="例如：我的三星平板" required>
+          <label for="code">連線碼</label>
+          <input id="code" class="mono" name="code" autocapitalize="none" spellcheck="false" autocomplete="off" maxlength="256" placeholder="輸入分享端的連線碼" required>
+          <button id="join" class="primary wide" type="submit">傳送連線請求 <span aria-hidden="true">→</span></button>
+          <button id="cancel" class="secondary wide" type="button" hidden>取消請求</button>
+        </form>
+      </div>
+      <div id="session" hidden>
+        <div class="section-head">
+          <div><p class="section-label">觀看端</p><h1>遠端畫面</h1></div>
+          <button id="leave" class="secondary" type="button">中斷連線</button>
+        </div>
+        <div id="stage" class="stage">
+          <video id="screen" autoplay playsinline muted tabindex="0" aria-label="遠端電腦畫面"></video>
+          <div id="video-wait" class="video-wait">正在連接影像…</div>
+        </div>
+        <div class="video-tools">
+          <span id="view-mode" class="role"></span>
+          <span id="video-stats" class="mono"></span>
+          <div class="actions">
+            <button id="sound" class="secondary" type="button" aria-pressed="false" hidden>開啟聲音</button>
+            <button id="request-privacy" class="secondary" type="button" hidden>請求隱私模式</button>
+            <button id="fullscreen" class="secondary" type="button">全螢幕</button>
+          </div>
+        </div>
+        <p id="input-hint" class="muted" hidden>點選畫面後可使用鍵盤與觸控板。觸控螢幕可單指拖曳或雙指捲動。按 Shift + Esc 可將鍵盤焦點移出遠端畫面。</p>
+      </div>
+    </section>
+    <section id="host" hidden>
+      <div class="section-head">
+        <div><p class="section-label">分享端</p><h1>分享這台電腦</h1></div>
+        <button id="stop" class="secondary danger" type="button" hidden>停止分享</button>
+      </div>
+      <div class="host-grid">
+        <div class="card">
+          <h2>分享設定</h2>
+          <label for="quality">影像品質</label>
+          <select id="quality">
+            <option value="balanced">平衡 · 720p / 30 fps</option>
+            <option value="clear">清晰 · 1080p / 30 fps</option>
+            <option value="smooth" selected>流暢 · 1080p / 60 fps</option>
+            <option value="fast">高更新率 · 1440p / 120 fps</option>
+            <option value="ultra">超高畫質 · 4K / 60 fps</option>
+          </select>
+          <p class="field-hint" id="quality-note">實際解析度與幀率會依畫面來源及網路調整。</p>
+          <label class="check"><input id="share-audio" type="checkbox"><span>一併分享系統或分頁音訊（依來源支援）</span></label>
+          <p id="audio-note" class="field-hint" hidden></p>
+          <button id="start" class="primary wide" type="button">選擇畫面並開始分享</button>
+          <div id="invite" hidden>
+            <label for="invite-code">連線碼</label>
+            <div class="invite-row">
+              <input id="invite-code" class="mono" readonly>
+              <button id="reveal" class="secondary" type="button" aria-pressed="false" hidden>顯示</button>
+              <button id="copy" class="secondary" type="button">複製</button>
+            </div>
+            <p class="field-hint">請將分享端的觀看網址及此碼交給對方。每台裝置都需要你同意。</p>
+            <label class="check"><input id="allow-control" type="checkbox" disabled><span>我已選取本機整個主螢幕，允許授予操作權限</span></label>
+            <p class="field-hint" id="control-note"></p>
+            <label id="privacy-permission" class="check" hidden><input id="allow-privacy" type="checkbox"><span>允許下一台獲准操作的裝置使用本機螢幕隱私模式</span></label>
+            <details class="preview"><summary>本機分享預覽</summary><video id="local-screen" autoplay playsinline muted></video></details>
+          </div>
+        </div>
+        <div class="device-panel">
+          <h2>連線裝置 <span id="count" class="count">0</span></h2>
+          <p id="empty" class="muted">開始分享後，裝置的連線請求會顯示在這裡。</p>
+          <ul id="devices" class="devices"></ul>
+          <div id="privacy-panel" class="privacy" hidden>
+            <h3>本機螢幕隱私模式</h3>
+            <p class="field-hint">開啟後請確認本機螢幕變暗，並請遠端使用者確認還能看到畫面。可在本機按 Ctrl + Alt + Shift + F10 恢復顯示。</p>
+            <p id="privacy-ask" role="status" hidden></p>
+            <button id="privacy-toggle" class="secondary" type="button">開啟隱私模式</button>
+            <button id="privacy-deny" class="secondary" type="button" hidden>拒絕請求</button>
+          </div>
+        </div>
+      </div>
+    </section>
+    <noscript>請開啟 JavaScript 以使用遠端桌面。</noscript>
+  </main>
+</body>
+</html>
