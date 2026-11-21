@@ -1,10 +1,12 @@
 // Matches the visible picture in a centered video with object-fit: contain.
 export function pictureBounds(video) {
   const rect = video.getBoundingClientRect();
-  if (!(video.videoWidth > 0 && video.videoHeight > 0 && rect.width > 0 && rect.height > 0)) return null;
-  const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
-  const width = video.videoWidth * scale;
-  const height = video.videoHeight * scale;
+  const sourceWidth = video.videoWidth ?? video.width;
+  const sourceHeight = video.videoHeight ?? video.height;
+  if (!(sourceWidth > 0 && sourceHeight > 0 && rect.width > 0 && rect.height > 0)) return null;
+  const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
   return { left: rect.left + (rect.width - width) / 2, top: rect.top + (rect.height - height) / 2, width, height };
 }
 

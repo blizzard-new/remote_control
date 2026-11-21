@@ -1,0 +1,6 @@
+**
+!requirements.txt
+!relay/
+!relay/*.py
+!deploy/
+!deploy/Dockerfile

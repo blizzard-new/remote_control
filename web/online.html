@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>跨網路連線 · 遠端桌面</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/online.mjs"></script>
+  </head>
+  <body>
+    <header>
+      <div class="topbar">
+        <span class="brand">遠端桌面</span
+        ><span class="status" id="status" role="status">待命</span>
+      </div>
+    </header>
+    <main>
+      <h1>跨網路連線</h1>
+      <p id="message" class="intro" role="status">
+        在要分享的裝置取得邀請碼，再從另一台裝置輸入。
+      </p>
+      <div class="host-grid">
+        <section id="hostbox" class="card" hidden>
+          <h2>分享這台電腦</h2>
+          <button class="primary" id="start">選擇畫面並取得邀請碼</button>
+          <div hidden id="invitation">
+            <label for="invite">本次邀請碼</label>
+            <div class="invite-row">
+              <input id="invite" readonly type="password" /><button
+                class="secondary"
+                id="show"
+              >
+                顯示</button
+              ><button class="secondary" id="copy">複製</button>
+            </div>
+            <p class="field-hint">
+              將邀請碼交給對方。收到請求後，請在這裡決定是否同意。
+            </p>
+          </div>
+          <div id="devices" class="devices"></div>
+          <button class="secondary danger" id="stop" hidden>停止分享</button>
+          <a id="lan" href="/">區網 WebRTC、音訊及隱私模式</a>
+        </section>
+        <section class="card" id="joinbox">
+          <h2>連接另一台裝置</h2>
+          <form id="join">
+            <label for="name">這台裝置的名稱</label
+            ><input id="name" required maxlength="48" value="我的裝置" /><label
+              for="code"
+              >對方提供的邀請碼</label
+            ><input
+              required
+              id="code"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              maxlength="1024"
+            /><button class="primary" id="connect">請求連線</button>
+          </form>
+        </section>
+      </div>
+      <button id="leave" class="secondary" hidden>離開連線</button>
+      <div class="stage" id="stage" hidden>
+        <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
+      </div>
+      <details id="settings" class="help">
+        <summary>配對服務設定</summary>
+        <label for="relay">配對服務 HTTPS 網址</label
+        ><input id="relay" type="url" spellcheck="false" />
+        <p>使用自架服務時，兩端請填入相同網址。</p>
+      </details>
+    </main>
+  </body>
+</html>

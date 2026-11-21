@@ -20,7 +20,8 @@ public final class DesktopViewerActivity extends Activity {
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         setContentView(page);
-        addressForm("", null);
+        if(getIntent().getBooleanExtra("online",false)) showViewer("https://appassets.androidplatform.net/online.html");
+        else addressForm("", null);
     }
 
     private void addressForm(String address, String error) {
@@ -53,12 +54,14 @@ public final class DesktopViewerActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private void showViewer(String address) {
         String origin = DesktopOrigin.of(address);
+        boolean bundled = getIntent().getBooleanExtra("online",false) && origin.equals("https://appassets.androidplatform.net");
         page.removeAllViews();
         page.setPadding(0, 0, 0, 0);
         TrackpadWebView view = new TrackpadWebView(this, origin);
         viewer = view;
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(bundled);
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
@@ -70,7 +73,15 @@ public final class DesktopViewerActivity extends Activity {
                 return !DesktopOrigin.matches(origin, request.getUrl().toString());
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
-                if (DesktopOrigin.matches(origin, request.getUrl().toString())) return null;
+                if (bundled && DesktopOrigin.matches(origin,request.getUrl().toString())) {
+                    String path=request.getUrl().getPath();
+                    if(path!=null && path.matches("/(online\\.html|style\\.css|online\\.mjs|relay\\.mjs|input\\.mjs)")) {
+                        String mime=path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":"text/javascript";
+                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.emptyMap(),
+                                getAssets().open(path.substring(1))); }
+                        catch(java.io.IOException unavailable) { /* fall through to the denied response */ }
+                    }
+                } else if (!bundled && DesktopOrigin.matches(origin, request.getUrl().toString())) return null;
                 return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
                         java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
             }

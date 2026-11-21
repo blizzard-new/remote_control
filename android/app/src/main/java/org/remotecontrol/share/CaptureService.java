@@ -56,6 +56,9 @@ public final class CaptureService extends Service {
     private AvcEncoder encoder;
     private int encodedSourceWidth, encodedSourceHeight;
     private ScreenServer server;
+    static volatile InternetHost online;
+    private InternetHost internet;
+    private String internetAddress;
     private ConnectivityManager.NetworkCallback networkCallback;
     private Bitmap bitmap;
     private ByteBuffer packed;
@@ -101,7 +104,8 @@ public final class CaptureService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        highQuality = intent.getBooleanExtra("highQuality", false);
+        internetAddress = intent.getStringExtra("internet");
+        highQuality = internetAddress == null && intent.getBooleanExtra("highQuality", false);
         status = new Status(true, "正在建立加密連線…");
         worker.post(() -> {
             try { begin(consent); }
@@ -117,6 +121,20 @@ public final class CaptureService extends Service {
 
     private void begin(Intent consent) throws Exception {
         if (destroyed) return;
+        if (internetAddress != null) {
+            internet = new InternetHost(internetAddress, this::stopWith);
+            online = internet;
+            beginProjection(consent);
+            internet.start();
+            main.post(new Runnable() {
+                @Override public void run() {
+                    if (destroyed) return;
+                    status = new Status(true, internet.status());
+                    main.postDelayed(this, 500);
+                }
+            });
+            return;
+        }
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
         Network network = connectivity.getActiveNetwork();
         NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
@@ -149,11 +167,7 @@ public final class CaptureService extends Service {
         String invitation = "請從同一個 " + transport + " 的電腦開啟\n" + server.url() + "\n\n在瀏覽器的憑證資訊中核對 SHA-256 指紋，再繼續：\n"
                 + identity.fingerprint() + "\n\n配對碼\n" + server.code()
                 + "\n\n配對後請切換到要展示的畫面。此頁面受到保護，觀看者會看到黑畫面。";
-        projection = getSystemService(MediaProjectionManager.class).getMediaProjection(Activity.RESULT_OK, consent);
-        if (projection == null) throw new IllegalStateException("系統拒絕擷取螢幕。");
-        projection.registerCallback(projectionCallback, worker);
-        DisplayMetrics metrics = screenMetrics();
-        resize(metrics.widthPixels, metrics.heightPixels);
+        beginProjection(consent);
         invitation += highQuality ? "\n\nH.264 模式 · 目標 30 fps" : "\n\n相容模式 · MJPEG";
         String sessionInfo = invitation;
         server.start(() -> stopWith("無法接受新的觀看者，分享已停止。"));
@@ -165,6 +179,14 @@ public final class CaptureService extends Service {
                 main.postDelayed(this, 1_000);
             }
         });
+    }
+
+    private void beginProjection(Intent consent) {
+        projection = getSystemService(MediaProjectionManager.class).getMediaProjection(Activity.RESULT_OK, consent);
+        if (projection == null) throw new IllegalStateException("系統拒絕擷取螢幕。");
+        projection.registerCallback(projectionCallback, worker);
+        DisplayMetrics metrics = screenMetrics();
+        resize(metrics.widthPixels, metrics.heightPixels);
     }
 
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
@@ -232,7 +254,7 @@ public final class CaptureService extends Service {
             encodedSourceHeight = sourceHeight;
             return;
         }
-        double scale = Math.min(1, 1280d / Math.max(sourceWidth, sourceHeight));
+        double scale = Math.min(1, (internet == null ? 1280d : 960d) / Math.max(sourceWidth, sourceHeight));
         int w = Math.max(1, (int) Math.round(sourceWidth * scale));
         int h = Math.max(1, (int) Math.round(sourceHeight * scale));
         if (reader != null && reader.getWidth() == w && reader.getHeight() == h) return;
@@ -243,7 +265,7 @@ public final class CaptureService extends Service {
             if (current == reader && !scheduled && !destroyed) {
                 scheduled = true;
                 // Acquire the newest frame at the deadline, keeping memory and slow clients bounded.
-                long period = server.viewers() > 0 ? 84 : 500;
+                long period = internet == null ? (server.viewers() > 0 ? 84 : 500) : (internet.viewers() > 0 ? 140 : 500);
                 worker.postAtTime(this::encodeFrame, Math.max(SystemClock.uptimeMillis(), lastFrame + period));
             }
         }, worker);
@@ -279,7 +301,8 @@ public final class CaptureService extends Service {
             bitmap.copyPixelsFromBuffer(packed);
             jpeg.reset();
             if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 76, jpeg)) throw new IllegalStateException("JPEG 編碼失敗。");
-            server.publish(jpeg.toByteArray());
+            if (internet != null) internet.publish(jpeg.toByteArray());
+            else server.publish(jpeg.toByteArray());
         } catch (RuntimeException error) {
             stopWith("畫面擷取中斷：" + reason(error));
         }
@@ -298,6 +321,8 @@ public final class CaptureService extends Service {
         status = new Status(false, endReason);
         main.removeCallbacksAndMessages(null);
         worker.postAtFrontOfQueue(() -> {
+            if (online == internet) online = null;
+            if (internet != null) internet.close();
             if (server != null) server.close();
             if (display != null) display.release();
             if (encoder != null) encoder.close();

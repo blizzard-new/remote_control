@@ -2,6 +2,17 @@
 
 用三星平板、手機或另一台電腦的瀏覽器觀看桌面，取得主機同意後即可使用鍵盤、滑鼠、觸控板或觸控螢幕操作。電腦要反向觀看 Android 手機或平板時，在 Android 裝置上啟動本專案的螢幕分享 App。這是獨立開發的自架軟體，畫質選項和連線人數都沒有訂閱費。
 
+## 下載與跨網路連線
+
+用手機、平板或電腦開啟同一個[下載頁](https://github.com/blizzard-new/remote_control/releases/latest)。Windows 下載 EXE；Mac 的「關於這台 Mac」若顯示 Apple M 系列，選 arm64，Intel 則選 x86_64。解壓縮後將 RemoteControl.app 移到「應用程式」。Android 下載 APK 後安裝。
+
+1. 兩台裝置都開啟軟體。在 Windows 或 Mac 按「選擇畫面並取得邀請碼」。在 Android 開啟「跨網路分享」並同意系統的擷取提示。
+2. 分享邀請碼給對方。Windows 或 Mac 的「連接另一台裝置」、Android 的「跨網路連接另一台裝置」都可以貼上同一種邀請碼。
+3. 分享端確認名稱後可允許觀看。Windows 或 Mac 分享整個單一主螢幕且具備輸入權限時，也可允許操作。任何一端離開即可中斷。Android 分享提供觀看。
+4. 桌面版優先嘗試直接傳送視訊；若兩個網路無法互通，改用加密 JPEG 中繼。Android 跨網路分享使用相同的中繼。中繼模式最高長邊 960 像素、目標約 7 fps；高幀率、音訊與 Windows 隱私模式的區網功能仍可在原本的 WebRTC 分享流程使用。
+
+預設服務網址為 `https://remote.uniway-tw.com`，需要網域管理者完成 [Cloudflare DNS 與 Caddy 部署](deploy/README.md)。自架時可在分享端指定其他 HTTPS 網址，邀請碼會帶入服務位置。邀請碼含工作階段密鑰，請僅交給預期的觀看者。若出現作業系統或瀏覽器的安裝提示，可先核對 Releases 裡的 SHA-256。Mac App 採 ad hoc 簽署，首次開啟可能需要在「系統設定 → 隱私權與安全性」允許；Windows 尚未採用商業程式碼簽章。從舊的 debug APK 改裝發行版，如 Android 回報簽章不同，先解除安裝舊的測試版。
+
 ## 選擇連線方向
 
 | 你想做的事 | 在被分享的裝置上 | 在觀看裝置上 |
@@ -15,7 +26,7 @@ Windows、macOS 和 Linux 主機可用桌面版 Chrome 或 Edge，透過瀏覽�
 
 ## 在 Windows 或 Mac 啟動
 
-**Windows 免安裝版**可從此分支通過的 GitHub Actions「Build and test」執行頁面下載 `Windows-desktop-host`，解壓縮後執行 `RemoteControlHost.exe`。選擇這台電腦的區網 IPv4 位址；例如電腦是 `192.168.1.20`，平板就開啟 `https://192.168.1.20:8443/`。請保持啟動視窗開啟。[建置與下載](https://github.com/blizzard-new/remote_control/actions?query=workflow%3A%22Build+and+test%22)
+**區網專用模式**可用 `RemoteControlHost.exe --lan` 啟動。選擇這台電腦的區網 IPv4 位址；例如電腦是 `192.168.1.20`，平板就開啟 `https://192.168.1.20:8443/`。請保持啟動視窗開啟。[建置與下載](https://github.com/blizzard-new/remote_control/actions?query=workflow%3A%22Build+and+test%22)
 
 **在 Mac 或其他電腦上從原始碼啟動**，請使用 Python 3.11 以上版本，在專案目錄執行以下指令。將範例 IP 換成被控制電腦的 Wi-Fi 或乙太網路 IPv4 位址。
 
