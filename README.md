@@ -2,6 +2,8 @@
 
 Windows、Mac 與 Android 可以互相連線。手機可用觸控、滑鼠及鍵盤操作電腦，電腦也可點擊、長按、拖曳和捲動手機畫面。第一次配對輸入四位數，後續可直接點選已配對的裝置。
 
+[桌面裝置中心](docs/device-center.png) · [手機裝置詳情](docs/device-detail-mobile.png)
+
 ## 下載與跨網路連線
 
 用手機、平板或電腦開啟同一個[下載頁](https://github.com/blizzard-new/remote_control/releases/latest)。Windows 選擇 Setup 安裝檔。Mac 的「關於這台 Mac」若顯示 Apple M 系列，選 arm64，Intel 則選 x86_64。下載相符的 PKG 安裝到「應用程式」。Android 下載 APK 後安裝。

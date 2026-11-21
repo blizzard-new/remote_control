@@ -1,3 +1,4 @@
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -9,7 +10,7 @@ class PairGrantTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "db"
             item = dict(listen="A"*32,dial="B"*32,name="tablet",address="https://relay.example")
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("CREATE TABLE devices(listen TEXT PRIMARY KEY,dial TEXT,name TEXT,address TEXT)")
                 db.execute("INSERT INTO devices VALUES(?,?,?,?)",tuple(item.values()))
             self.assertEqual(update(path,"list",{})[0]["grant"],"")
