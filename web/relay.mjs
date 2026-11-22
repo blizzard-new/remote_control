@@ -136,10 +136,12 @@ export class Relay {
         .then(() => this.receive(e.data))
         .catch(() => this.close());
     };
-    ws.onclose = () => {
-      this.closed = true;
-      this.events.closed();
-    };
+    // Finish decrypting any final peer message before reporting the socket close.
+    ws.onclose = () =>
+      incoming.finally(() => {
+        this.closed = true;
+        this.events.closed();
+      });
   }
   async receive(data) {
     if (this.closed) return;
@@ -217,9 +219,10 @@ export class Relay {
       })
       .catch(() => this.drop(id))
       .finally(() => peer.pending--);
+    return peer.queue;
   }
   json(id, value) {
-    this.send(id, 1, utf8.encode(JSON.stringify(value)));
+    return this.send(id, 1, utf8.encode(JSON.stringify(value)));
   }
   drop(id) {
     if (!this.peers.delete(id)) return;

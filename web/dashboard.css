@@ -645,3 +645,11 @@ i[data-i="sliders"] {
 .session-status:has(#message[hidden]):has(#stop[hidden]) {
   display: none;
 }
+
+#view-mode {
+  color: white;
+  background: #263953;
+  padding: 5px 9px;
+  border-radius: 5px;
+  font-size: 13px;
+}

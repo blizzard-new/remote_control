@@ -47,6 +47,7 @@ const identityReady = (async () => {
     // A browser session can still connect using its own display name.
   }
 })();
+let messageFor = null;
 let contactsLoaded = false;
 let listError = false;
 let listRequest = 0;
@@ -116,7 +117,7 @@ function renderDevices() {
   const query = $("search").value.trim().toLowerCase(),
     name = $("name").value || defaultName;
   $("self-name").textContent = name;
-  $("message").hidden = !!selected && (!active || active.host);
+  $("message").hidden = messageFor !== (selected?.listen || null);
   $("self").setAttribute("aria-pressed", String(!selected));
   $("self").hidden = !!query && !name.toLowerCase().includes(query);
   $("self").querySelector("i").dataset.i = window.PhoneDevices
@@ -221,6 +222,7 @@ go("devices", false);
 refreshDevices().catch((err) => say(err.message));
 const decoder = new TextDecoder();
 function say(value) {
+  messageFor = selected?.listen || null;
   $("message").hidden = false;
   $("message").textContent = value;
 }
@@ -242,6 +244,7 @@ function closeSession(s, message) {
     if (p.decoder && p.decoder.state !== "closed") p.decoder.close();
   }
   clearTimeout(s.deadline);
+  clearTimeout(s.retryTimer);
   clearInterval(s.frames);
   clearInterval(s.captureTimer);
   s.detach?.();
@@ -261,6 +264,8 @@ function closeSession(s, message) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   renderConnections();
   $("cancel").hidden = true;
+  $("pair-again").hidden = true;
+  $("view-mode").hidden = true;
   $("stats").textContent = "正在接收畫面";
   $("video-menu").open = false;
   renderDevices();
@@ -274,6 +279,7 @@ function begin(host) {
     abort: new AbortController(),
   });
   renderConnections();
+  $("pair-again").hidden = true;
   $("joinbox").hidden = false;
   $("start").hidden = true;
   $("connect").disabled = !host;
@@ -362,6 +368,10 @@ function peerLeft(s, id) {
   if (!p) return;
   s.peers.delete(id);
   renderConnections();
+  if (s.host)
+    for (const waiting of s.peers.values())
+      if (waiting.row && !waiting.approved && !waiting.claiming)
+        renderRequest(s, waiting);
   if (s.host && ![...s.peers.values()].some((v) => v.approved)) {
     s.reading = false;
     s.hasFrame = false;
@@ -377,7 +387,16 @@ async function connectRelay(s) {
   const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
   s.address = address;
   $("relay").value = address;
+  let transport;
   const events = {
+    reconnecting() {
+      if (active !== s) return;
+      s.ready = false;
+      $("invitation").hidden = true;
+      $("invite").value = "";
+      renderConnections();
+      say("正在重新連接配對服務，請保持這個分頁開啟。");
+    },
     ready(code) {
       if (active !== s) return;
       clearTimeout(s.deadline);
@@ -385,7 +404,7 @@ async function connectRelay(s) {
       renderConnections();
       $("invitation").hidden = false;
       $("invite").value = code;
-      say("將邀請碼交給另一台已安裝的裝置。");
+      say("請保持此分頁開啟。新裝置可輸入四碼，已配對裝置可直接重連。");
     },
     paired(id, pair) {
       if (active !== s) return;
@@ -413,10 +432,32 @@ async function connectRelay(s) {
       peerLeft(s, id);
     },
     unavailable() {
-      closeSession(s, "找不到這次分享。請確認邀請碼、配對服務及分享端狀態。");
+      if (active !== s || s.relay !== transport) return;
+      if (s.pair?.saved) {
+        const delays = [1500, 3000, 6000, 10000];
+        const attempt = s.attempt || 0;
+        if (attempt < delays.length) {
+          s.attempt = attempt + 1;
+          s.relay = null;
+          transport.close();
+          say("正在等候已配對裝置恢復連線…");
+          s.retryTimer = setTimeout(() => {
+            if (active === s)
+              connectRelay(s).catch((err) => closeSession(s, err.message));
+          }, delays[attempt]);
+          return;
+        }
+        closeSession(
+          s,
+          "配對服務找不到這台裝置。請喚醒對方，開啟 Uniway Remote 並保持主機分頁顯示「等候連線」，再按遠端控制。若對方已重新安裝，可使用目前顯示的四碼配對。",
+        );
+        $("pair-again").hidden = false;
+      } else
+        closeSession(s, "找不到這次分享，請使用對方目前顯示的四碼重新連線。");
     },
     closed() {
-      closeSession(s, "網路連線已結束。重新分享即可取得新的邀請碼。");
+      if (s.relay === transport)
+        closeSession(s, "與配對服務的網路連線已結束。請確認網路後再試。");
     },
     async packet(id, type, data) {
       if (active !== s) return;
@@ -453,6 +494,23 @@ async function connectRelay(s) {
         s.tap === m.serial
       ) {
         keyboard(m.editable === true);
+        return;
+      }
+      if (!s.host && m.t === "capture-error" && p.approved) {
+        closeSession(
+          s,
+          m.platform === "Darwin"
+            ? "Mac 無法擷取螢幕。請在 Mac 的「系統設定 → 隱私權與安全性 → 螢幕與系統音訊錄製」允許 RemoteControl，依系統提示重新開啟，再點遠端控制。"
+            : "對方暫時無法擷取螢幕。請在對方裝置檢查螢幕錄製權限後，再點遠端控制。",
+        );
+        return;
+      }
+      if (!s.host && !p.approved && m.t === "control-pending") {
+        say(
+          m.reason === "access" && m.platform === "Darwin"
+            ? "請在 Mac 的「隱私權與安全性 → 輔助使用」開啟 RemoteControl，再回主機分頁按「重新檢查操作權限」。"
+            : "已送出操作請求，請在對方的主機分頁確認。",
+        );
         return;
       }
       if (s.host) {
@@ -506,6 +564,7 @@ async function connectRelay(s) {
         clearTimeout(p.timeout);
         p.approved = true;
         p.control = m.control === true;
+        $("view-mode").hidden = p.control;
         $("joinbox").hidden = true;
         $("stage").hidden = false;
         $("cancel").hidden = true;
@@ -539,11 +598,11 @@ async function connectRelay(s) {
   };
   localStorage.setItem("rc-relay", address);
   if (s.host) {
-    s.relay = new HostChannels(address, events);
+    s.relay = transport = new HostChannels(address, events);
     await refreshDevices();
     if (active === s) await s.relay.start(contacts);
   } else {
-    s.relay = new Relay(address, false, s.invite, events);
+    s.relay = transport = new Relay(address, false, s.invite, events);
     await s.relay.start();
   }
 }
@@ -600,12 +659,12 @@ function request(s, p, name) {
         contacts.find(
           (c) => c.listen === p.pair.listen && c.address === s.address,
         )?.grant;
-      if (grant === "view" || grant === "control") {
-        const control =
-          grant === "control" &&
-          !p.viewOnly &&
-          eligible(s) &&
-          ![...s.peers.values()].some((v) => v.control || v.claiming);
+      if (m.capabilities) s.cap = m.capabilities;
+      const control = grant === "control" && !p.viewOnly && canOfferControl(s);
+      if (
+        control ||
+        (p.viewOnly && (grant === "view" || grant === "control"))
+      ) {
         p.claiming = control;
         s.local.send(
           JSON.stringify({ type: "approve", id: p.localId, control }),
@@ -670,6 +729,11 @@ function request(s, p, name) {
   };
   p.ws.onclose = () => s.relay.drop(p.id);
 }
+function canOfferControl(s) {
+  return (
+    eligible(s) && ![...s.peers.values()].some((v) => v.control || v.claiming)
+  );
+}
 function renderRequest(s, p) {
   p.row?.remove();
   const row = (p.row = document.createElement("div"));
@@ -688,7 +752,9 @@ function renderRequest(s, p) {
   };
   if (!p.approved) {
     const approve = (control) => {
-      p.localGrant = control ? "control" : "view";
+      const stored = contacts.find((c) => c.listen === p.pair?.listen);
+      p.localGrant =
+        control || stored?.grant === "control" ? "control" : "view";
       p.claiming = control;
       for (const b of row.querySelectorAll("button")) b.disabled = true;
       s.local.send(JSON.stringify({ type: "approve", id: p.localId, control }));
@@ -697,12 +763,25 @@ function renderRequest(s, p) {
     hint.textContent = "允許後會記住此裝置與權限，下次可直接連線。";
     row.append(hint);
     button("允許觀看", () => approve(false));
-    if (
-      !p.viewOnly &&
-      eligible(s) &&
-      ![...s.peers.values()].some((v) => v.control || v.claiming)
-    )
-      button("允許操作", () => approve(true));
+    if (!p.viewOnly) {
+      if (canOfferControl(s)) {
+        button("允許操作", () => approve(true));
+      } else if (!eligible(s)) {
+        hint.textContent =
+          s.cap?.controlHint ||
+          "主機目前無法使用鍵盤及滑鼠操作。請檢查系統權限。";
+        button("重新檢查操作權限", () =>
+          s.local.send(JSON.stringify({ type: "capabilities" })),
+        );
+      } else
+        hint.textContent =
+          "另一台裝置正在操作本機。可先允許觀看，或等對方結束控制。";
+      s.relay.json(p.id, {
+        t: "control-pending",
+        platform,
+        reason: eligible(s) ? "approval" : "access",
+      });
+    }
     button("拒絕", () => s.relay.drop(p.id));
   } else button("中斷連線", () => s.relay.drop(p.id));
   $("devices").append(row);
@@ -896,7 +975,7 @@ async function tuneSender(s, p) {
   }
 }
 function nextFrame(s) {
-  const peers = [...s.peers.values()].filter((p) => p.approved);
+  const peers = [...s.peers.values()].filter((p) => p.approved && !p.ending);
   if (active !== s || !peers.length || s.reading || s.local.readyState !== 1)
     return;
   s.reading = true;
@@ -964,6 +1043,20 @@ function startCapture(s) {
     }
   };
 }
+async function captureFailed(s, reason) {
+  if (active !== s) return;
+  s.hasFrame = false;
+  s.reading = false;
+  say(reason || "無法擷取主螢幕，請檢查系統權限後再連線。");
+  const viewers = [...s.peers.values()].filter((p) => p.approved && !p.ending);
+  for (const peer of viewers) peer.ending = true;
+  await Promise.all(
+    viewers.map(async (peer) => {
+      await s.relay.json(peer.id, { t: "capture-error", platform });
+      if (active === s && s.peers.get(peer.id) === peer) s.relay.drop(peer.id);
+    }),
+  );
+}
 function standby() {
   if (!token || active) return;
   const s = begin(true);
@@ -976,6 +1069,11 @@ function standby() {
       if (e.data instanceof ArrayBuffer) {
         try {
           await s.frame(e.data);
+        } catch {
+          await captureFailed(
+            s,
+            "無法處理主螢幕畫面。請重新連線，或用新版瀏覽器開啟主機分頁。",
+          );
         } finally {
           s.reading = false;
           nextFrame(s);
@@ -984,6 +1082,7 @@ function standby() {
       }
       const m = JSON.parse(e.data);
       if (m.type === "hosted") {
+        clearTimeout(s.deadline);
         s.localCode = m.code;
         s.cap = m.capabilities;
         s.primary = m.primaryCapture;
@@ -991,7 +1090,12 @@ function standby() {
         s.frame = startCapture(s);
         await connectRelay(s);
       }
-      if (m.type === "capture-error") throw Error(m.message);
+      if (m.type === "capture-error") await captureFailed(s, m.message);
+      if (m.type === "capabilities") {
+        s.cap = m.capabilities;
+        for (const p of s.peers.values())
+          if (p.row && !p.approved && !p.claiming) renderRequest(s, p);
+      }
       if (m.type === "error" && !m.id) throw Error(m.message);
       if (m.type === "error" && m.id)
         for (const p of s.peers.values())
@@ -1003,6 +1107,14 @@ function standby() {
   s.local.onclose = () => closeSession(s, "本機連線服務已停止。");
 }
 $("start").onclick = standby;
+$("pair-again").onclick = () => {
+  $("pair-again").hidden = true;
+  $("code").value = "";
+  requestViewOnly = false;
+  say("");
+  go("connect");
+  $("code").focus();
+};
 $("relay").onchange = () => {
   if (active?.host && !active.peers.size) {
     closeSession(active, "");

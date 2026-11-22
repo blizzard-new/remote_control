@@ -78,7 +78,7 @@ jobs:
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
           codesign --verify --deep --strict dist/RemoteControl.app
-          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.1 "RemoteControl-macOS-$(uname -m).pkg"
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.2 "RemoteControl-macOS-$(uname -m).pkg"
           ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

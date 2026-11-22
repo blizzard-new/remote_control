@@ -47,7 +47,7 @@ class PrimaryScreen:
         cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
         self.mac_access = bool(cg.CGPreflightScreenCaptureAccess() or cg.CGRequestScreenCaptureAccess())
         if not self.mac_access:
-            raise RuntimeError("請在 Mac 的「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 RemoteControl，再重新開啟程式。")
+            raise RuntimeError("請在 Mac 的「系統設定 → 隱私權與安全性 → 螢幕與系統音訊錄製」（舊版為「螢幕錄製」）允許 RemoteControl，再依系統提示重新開啟程式。")
 
     async def frame(self):
         async with self.lock:
@@ -60,15 +60,19 @@ class PrimaryScreen:
                 self.helper = await asyncio.create_subprocess_exec(str(helper), stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             proc = self.helper
-            proc.stdin.write(b"F")
-            await proc.stdin.drain()
-            length, = struct.unpack(">I", await asyncio.wait_for(proc.stdout.readexactly(4), 10))
-            if not 0 < length <= 16 * 1024 * 1024:
-                raise RuntimeError("無法讀取 Mac 主螢幕。")
-            return await asyncio.wait_for(proc.stdout.readexactly(length), 5)
+            try:
+                proc.stdin.write(b"F")
+                await proc.stdin.drain()
+                length, = struct.unpack(">I", await asyncio.wait_for(proc.stdout.readexactly(4), 10))
+                if not 0 < length <= 16 * 1024 * 1024:
+                    raise ValueError("Invalid frame length")
+                return await asyncio.wait_for(proc.stdout.readexactly(length), 5)
+            except (OSError, EOFError, TimeoutError, ValueError) as exc:
+                raise RuntimeError("Mac 無法擷取主螢幕。請喚醒 Mac，確認螢幕錄製已允許 RemoteControl，再重新連線。") from exc
 
     async def stop(self):
         async with self.lock:
+            self.mac_access = False
             proc, self.helper = self.helper, None
             if proc is not None:
                 proc.stdin.close()

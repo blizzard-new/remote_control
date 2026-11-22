@@ -208,14 +208,17 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                     self.jpeg = out.getvalue()
             async def frame(self):
                 self.frames += 1
+                if getattr(self, "denied", False):
+                    raise RuntimeError("請允許螢幕錄製。")
                 return self.jpeg
             async def stop(self): pass
 
         screen = Display()
         desktop.capabilities = {**desktop.capabilities, "keyboard": True}
         desktop.editable_focus = lambda: True
+        other = RecordingDesktop()
         async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db, primary_capture=screen)) as sharing, \
-                TestServer(create_app("viewer-only", RecordingDesktop(), device_store=viewer_db, primary_capture=Display())) as viewing, async_playwright() as pw:
+                TestServer(create_app("viewer-only", other, device_store=viewer_db, primary_capture=Display())) as viewing, async_playwright() as pw:
             browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
                 args=["--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
             try:
@@ -286,6 +289,36 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await expect(host.locator("#connected-count")).to_have_text("0")
                 await expect(viewer.locator("#connected-count")).to_have_text("0")
                 await expect(viewer.locator("#device-count")).to_have_text("1")
+                # Reproduce a capture permission failure after a pair has already been saved.
+                await host.locator("#start").click()
+                await expect(host.locator("#invitation")).to_be_visible()
+                screen.denied = True
+                await viewer.locator("nav [data-page=devices]").click()
+                await viewer.locator("#remembered button").first.click()
+                await viewer.locator("#action-connect").click()
+                await expect(host.locator("#message")).to_contain_text("螢幕錄製")
+                await expect(viewer.locator("#message")).to_contain_text("擷取")
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await expect(host.locator("#invitation")).to_be_visible()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                screen.denied = False
+                # Reopening the Mac while the old host still holds the saved room can reject
+                # its first registration. Keep the PIN listener and recover the saved route.
+                await host.add_init_script("""{
+                  const Original = WebSocket;
+                  window.WebSocket = class extends Original {
+                    send(data) {
+                      if (!window.interrupted && this.url.endsWith('/v1/session') && typeof data === 'string') {
+                        const m = JSON.parse(data);
+                        if (m.role === 'host' && m.nonce) {
+                          window.interrupted = true;
+                          return this.close();
+                        }
+                      }
+                      return super.send(data);
+                    }
+                  };
+                }""")
                 # Start a fresh session after reloading both dashboards and reconnect by name.
                 await host.goto("about:blank")
                 await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
@@ -295,7 +328,7 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await expect(viewer.locator("#code")).to_have_value("")
                 await viewer.locator("#remembered button").first.click()
                 await viewer.locator("#action-connect").click()
-                await expect(host.get_by_role("button",name="中斷連線")).to_be_visible()
+                await expect(host.get_by_role("button",name="中斷連線")).to_be_visible(timeout=20000)
                 await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
                 await expect(host.locator("#status")).to_contain_text("遠端操作中")
                 await expect(viewer.locator("#stage")).to_be_visible()
@@ -310,6 +343,23 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await host.locator("#action-connect").click()
                 await viewer.get_by_role("button",name="允許觀看").click()
                 await expect(host.locator("#stage")).to_be_visible()
+                await expect(host.locator("#view-mode")).to_be_visible()
+                await host.locator("#leave").click()
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                other.capabilities = {**other.capabilities, "control": False, "controlHint": "請允許輔助使用"}
+                await host.locator("#action-connect").click()
+                await expect(viewer.get_by_text("請允許輔助使用", exact=True)).to_be_visible()
+                await expect(viewer.get_by_role("button",name="允許操作")).to_have_count(0)
+                await expect(host.locator("#stage")).to_be_hidden()
+                other.capabilities["control"] = True
+                await viewer.get_by_role("button",name="重新檢查操作權限").click()
+                await viewer.get_by_role("button",name="允許操作").click()
+                await expect(host.locator("#stage")).to_be_visible()
+                await expect(host.locator("#view-mode")).to_be_hidden()
+                await host.wait_for_function("document.querySelector('#picture').getContext('2d').getImageData(160,90,1,1).data[1] > 155")
+                await host.keyboard.press("b")
+                key = await asyncio.wait_for(other.events.get(), 5)
+                self.assertEqual((key["kind"],key["code"]), ("key","KeyB"))
 
             finally:
                 await browser.close()

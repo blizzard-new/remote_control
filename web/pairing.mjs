@@ -89,6 +89,7 @@ export class PinHost {
     const ws = (this.ws = new WebSocket(relayEndpoint(this.address)));
     const pending = new Set();
     ws.binaryType = "arraybuffer";
+    this.timer = setTimeout(() => ws.close(), 12000);
     ws.onopen = () => ws.send(JSON.stringify({ room, role: "host" }));
     ws.onmessage = async ({ data }) => {
       if (ws !== this.ws || this.closed) return;
@@ -96,6 +97,7 @@ export class PinHost {
         const m = JSON.parse(data);
         if (m.t === "unavailable" && ++this.retries < 8) return this.rotate();
         if (m.t === "ready") {
+          clearTimeout(this.timer);
           this.retries = 0;
           this.onCode(code);
           this.timer = setTimeout(() => this.rotate(), 300000);
@@ -121,7 +123,10 @@ export class PinHost {
       }
     };
     ws.onclose = () => {
-      if (!this.closed && ws === this.ws) this.onError();
+      if (!this.closed && ws === this.ws) {
+        clearTimeout(this.timer);
+        this.onError();
+      }
     };
   }
   rotate() {
@@ -199,17 +204,44 @@ export class HostChannels {
     this.channels = new Map();
     this.routes = new Map();
     this.next = 0;
+    this.saved = new Map();
   }
   async start(contacts) {
-    for (const contact of contacts.filter((p) => p.address === this.address))
-      this.listen(contact, true).catch(() => {});
+    for (const contact of contacts.filter((p) => p.address === this.address)) {
+      this.saved.set(contact.listen, { pair: contact, failures: 0 });
+      this.listen(contact, true).catch(() => this.retry(contact.listen));
+    }
+    let failures = 0;
+    const retryPin = () => {
+      if (this.closed) return;
+      this.events.reconnecting?.();
+      this.pinTimer = setTimeout(
+        () => this.pin.rotate().catch(retryPin),
+        Math.min(60000, 2000 * 2 ** Math.min(failures++, 5)),
+      );
+    };
     this.pin = new PinHost(
       this.address,
-      this.events.ready,
+      (code) => {
+        failures = 0;
+        this.events.ready(code);
+      },
       (pair) => this.listen(pair, false),
-      this.events.closed,
+      retryPin,
     );
-    await this.pin.start();
+    await this.pin.start().catch(retryPin);
+  }
+  retry(key) {
+    const saved = this.saved.get(key);
+    if (!saved || this.closed || saved.timer || this.channels.has(key)) return;
+    const delay = Math.min(60000, 2000 * 2 ** Math.min(saved.failures++, 5));
+    saved.timer = setTimeout(
+      () => {
+        saved.timer = null;
+        this.listen(saved.pair, true).catch(() => this.retry(key));
+      },
+      delay + Math.random() * 1000,
+    );
   }
   listen(pair, saved) {
     if (this.closed || this.channels.size >= 24)
@@ -218,6 +250,8 @@ export class HostChannels {
       const ids = new Map();
       const entry = { saved, ids };
       const remove = () => {
+        if (this.channels.get(pair.listen) !== entry) return;
+        this.channels.delete(pair.listen);
         clearTimeout(entry.timer);
         entry.relay.close();
         for (const id of ids.values()) {
@@ -225,13 +259,15 @@ export class HostChannels {
           this.events.left(id);
         }
         ids.clear();
-        this.channels.delete(pair.listen);
+        this.retry(pair.listen);
         reject(Error("裝置連線已結束。"));
       };
       entry.remove = remove;
       const relay = (entry.relay = new Relay(this.address, true, pair.listen, {
         ready: () => {
           clearTimeout(entry.timer);
+          const savedRoute = this.saved.get(pair.listen);
+          if (savedRoute) savedRoute.failures = 0;
           if (!entry.saved) entry.timer = setTimeout(remove, 150000);
           resolve();
         },
@@ -264,16 +300,20 @@ export class HostChannels {
   remember(pair) {
     const entry = this.channels.get(pair.listen);
     if (entry) {
+      if (!this.saved.has(pair.listen))
+        this.saved.set(pair.listen, { pair, failures: 0 });
       entry.saved = true;
       clearTimeout(entry.timer);
     }
   }
   forget(key) {
+    clearTimeout(this.saved.get(key)?.timer);
+    this.saved.delete(key);
     this.channels.get(key)?.remove();
   }
   json(id, value) {
     const r = this.routes.get(id);
-    r?.relay.json(r.remote, value);
+    return r?.relay.json(r.remote, value);
   }
   send(id, type, data) {
     const r = this.routes.get(id);
@@ -285,6 +325,9 @@ export class HostChannels {
   }
   close() {
     this.closed = true;
+    clearTimeout(this.pinTimer);
+    for (const entry of this.saved.values()) clearTimeout(entry.timer);
+    this.saved.clear();
     this.pin?.close();
     for (const entry of [...this.channels.values()]) entry.remove();
   }

@@ -183,6 +183,8 @@ class Room:
     async def host_message(self, message):
         host = self.host
         kind = message.get("type")
+        if kind == "capabilities":
+            return await send(host, "capabilities", capabilities=self.desktop.capabilities)
         if kind == "primary-frame":
             if self.primary_capture and any(p.approved for p in self.peers.values()):
                 if self.frame_task is None or self.frame_task.done():
@@ -276,7 +278,8 @@ class Room:
                 peer = Peer(secrets.token_urlsafe(12), name.strip(), socket, monotonic())
                 self.peers[peer.id] = peer
                 host = self.host
-                await send(socket, "pending", id=peer.id)
+                fields = {"capabilities": self.desktop.capabilities} if self.primary_capture and is_loopback(request.remote) else {}
+                await send(socket, "pending", id=peer.id, **fields)
                 await send(host, "request", id=peer.id, name=peer.name)
             else:
                 await error(socket, "無法配對。請確認主機已開啟分享、邀請碼正確，且仍有空位。")
