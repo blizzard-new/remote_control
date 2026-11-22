@@ -76,6 +76,15 @@ final class PhoneShare implements AutoCloseable {
             Base64.decode(key, Base64.URL_SAFE),
             ready,
             false);
+    c.host.displayName = devices::displayName;
+    c.host.identify = (name, platform) -> {
+      try {
+        JSONObject identity = new JSONObject().put("listen", key).put("dial", pair.getString("dial"))
+            .put("address", address).put("name", name).put("platform", platform);
+        devices.update("identify", identity.toString());
+      } catch (org.json.JSONException ignored) {
+      }
+    };
     c.host.grant = saved ? pair.optString("grant") : "";
     channels.put(key, c);
     c.host.start();
@@ -97,6 +106,10 @@ final class PhoneShare implements AutoCloseable {
 
   String invitation() {
     return directory.code();
+  }
+
+  synchronized void appendConnected(org.json.JSONArray out) throws org.json.JSONException {
+    for (Channel c : channels.values()) c.host.appendConnected(out);
   }
 
   synchronized int viewers() {
@@ -138,7 +151,7 @@ final class PhoneShare implements AutoCloseable {
     control = control && c.host.requestedControl(viewer);
     if (allow && c.host.grant.isEmpty()) {
       try {
-        c.pair.put("name", name).put("address", address).put("grant", control ? "control" : "view");
+        c.pair.put("name", name).put("platform", c.host.platform(viewer)).put("address", address).put("grant", control ? "control" : "view");
         c.saved = !devices.update("save", c.pair.toString()).equals("null");
         if (c.saved) c.host.grant = c.pair.getString("grant");
       } catch (Exception ignored) {

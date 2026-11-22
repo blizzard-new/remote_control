@@ -22,13 +22,35 @@ public final class PhoneDevices {
 
   @JavascriptInterface public void openHost() {
     new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
-      context.startActivity(new android.content.Intent(context, ShareActivity.class)
+      context.startActivity(new android.content.Intent(context, ShareHostActivity.class)
         .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)));
   }
 
   @JavascriptInterface
   public String name() {
     return Build.MODEL;
+  }
+
+  @JavascriptInterface
+  public void setDisplayName(String name) {
+    if (name != null && name.length() <= 48)
+      preferences.edit().putString("display-name", name.trim()).apply();
+  }
+
+  String displayName() {
+    String label = preferences.getString("display-name", "");
+    return label.isEmpty() ? name() : label;
+  }
+
+  @JavascriptInterface
+  public String sessionState() throws org.json.JSONException {
+    CaptureService.Status state = CaptureService.status;
+    PhoneShare host = CaptureService.online;
+    JSONArray peers = new JSONArray();
+    if (state.running && host != null) host.appendConnected(peers);
+    return new JSONObject().put("peers", peers).put("lan", state.lanViewers)
+        .put("listening", state.running && (state.lanViewers >= 0 ||
+            (host != null && !host.invitation().isEmpty()))).toString();
   }
 
   @JavascriptInterface
@@ -41,7 +63,7 @@ public final class PhoneDevices {
           String listen = item.getString("listen");
           if (!listen.matches("[A-Za-z0-9_-]{32}")) throw new IllegalArgumentException();
           if (action.equals("forget")) entries.remove(listen);
-          else if (action.equals("save")) {
+          else if (action.equals("identify") || action.equals("save")) {
             String dial = item.getString("dial"),
                 name = item.getString("name"),
                 address = item.getString("address");
@@ -51,12 +73,19 @@ public final class PhoneDevices {
                 || address.length() > 512) throw new IllegalArgumentException();
             DesktopOrigin.viewerUrl(address);
             if (!entries.has(listen) && entries.length() >= 16) throw new IllegalStateException();
+            if (action.equals("identify")) {
+              JSONObject existing = entries.getJSONObject(listen);
+              if (!existing.getString("dial").equals(dial) || !existing.getString("address").equals(address))
+                throw new IllegalArgumentException();
+              item.put("grant", existing.optString("grant"));
+            }
             entries.put(
                 listen,
                 new JSONObject()
                     .put("listen", listen)
                     .put("dial", dial)
                     .put("name", name)
+                    .put("platform", item.optString("platform", ""))
                     .put("address", address)
                     .put("grant", item.optString("grant", "")));
           } else throw new IllegalArgumentException();

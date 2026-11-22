@@ -41,7 +41,13 @@ public final class CaptureService extends Service {
     static final class Status {
         final boolean running;
         final String text;
-        Status(boolean running, String text) { this.running = running; this.text = text; }
+        final int lanViewers;
+        Status(boolean running, String text) { this(running, text, -1); }
+        Status(boolean running, String text, int lanViewers) {
+            this.running = running;
+            this.text = text;
+            this.lanViewers = lanViewers;
+        }
     }
     static volatile Status status = new Status(false, "讓電腦連到這台手機，或用手機操作另一台電腦。");
     private static final String CHANNEL = "screen-share";
@@ -93,7 +99,7 @@ public final class CaptureService extends Service {
         PendingIntent stop = PendingIntent.getService(this, 1,
                 new Intent(this, CaptureService.class).setAction(STOP), PendingIntent.FLAG_IMMUTABLE);
         PendingIntent open = PendingIntent.getActivity(this, 2,
-                new Intent(this, ShareActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                new Intent(this, ShareHostActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification notification = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("正在分享 Android 螢幕")
                 .setContentText("按此查看配對資訊或結束分享。").setContentIntent(open)
@@ -188,7 +194,8 @@ public final class CaptureService extends Service {
         main.post(new Runnable() {
             @Override public void run() {
                 if (destroyed) return;
-                status = new Status(true, sessionInfo + "\n\n目前觀看裝置：" + active.viewers());
+                int count = active.viewers();
+                status = new Status(true, sessionInfo + "\n\n目前觀看裝置：" + count, count);
                 main.postDelayed(this, 1_000);
             }
         });

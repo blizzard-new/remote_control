@@ -1,7 +1,7 @@
 [Setup]
 AppId={{144B189C-1153-4E77-A53D-47B86019CB8F}
 AppName=RemoteControl
-AppVersion=0.5.0
+AppVersion=0.5.1
 DefaultDirName={localappdata}\Programs\RemoteControl
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible

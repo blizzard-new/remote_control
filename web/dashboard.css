@@ -97,10 +97,9 @@ h2 {
 .shell {
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: clamp(195px, 25.7vw, 256px) minmax(
-      220px,
-      34.5vw
-    ) minmax(290px, 1fr);
+  grid-template-columns:
+    clamp(195px, 25.7vw, 256px) minmax(220px, 34.5vw)
+    minmax(290px, 1fr);
   grid-template-rows: 66px 1fr;
 }
 .rail {
@@ -273,6 +272,17 @@ h2 {
 .device-row[aria-pressed="true"] i {
   color: var(--blue);
 }
+#status:not([data-connected="true"]) {
+  color: #466079;
+  background: #edf2f7;
+}
+#legacy summary {
+  color: #50657d;
+  padding: 10px;
+  font-size: 13px;
+}
+#legacy p,
+#connected-list p,
 #list-empty {
   font-size: 13px;
   color: var(--muted);

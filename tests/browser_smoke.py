@@ -6,6 +6,7 @@ import os
 import secrets
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import socket
 import unittest
 
 from aiohttp.test_utils import TestServer
@@ -232,6 +233,10 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 invite = await host.locator("#invite").input_value()
                 self.assertRegex(invite, r"^[0-9]{4}$")
                 await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await expect(viewer.locator("#self-name")).to_have_text(socket.gethostname()[:48])
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#device-count")).to_have_text("0")
+                await expect(viewer.locator("#remembered button")).to_have_count(0)
                 await viewer.locator("nav [data-page=settings]").click()
                 await viewer.locator("#name").fill("測試平板")
                 await viewer.locator("nav [data-page=connect]").click()
@@ -239,10 +244,14 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 # The fourth digit submits the pairing request.
                 await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
                 await expect(viewer.locator("#stage")).to_be_hidden()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                await expect(host.locator("#remembered button")).to_have_count(0)
                 self.assertEqual(screen.frames, 0)
                 await host.get_by_role("button", name="允許操作").click()
                 await viewer.wait_for_function("""() => {const c=document.querySelector('#picture');
                     return c.width===320 && c.getContext('2d').getImageData(160,90,1,1).data[1]>155}""")
+                await expect(host.locator("#connected-count")).to_have_text("1")
+                await expect(host.locator("#connected-list")).to_contain_text("測試平板")
                 box = await viewer.locator("#picture").bounding_box()
                 self.assertEqual((box["width"],box["height"]), (400,800))
                 await viewer.keyboard.press("a")
@@ -274,6 +283,9 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await host.locator("#stop").click()
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 await asyncio.wait_for(desktop.released.wait(),timeout=5)
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#device-count")).to_have_text("1")
                 # Start a fresh session after reloading both dashboards and reconnect by name.
                 await host.goto("about:blank")
                 await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
@@ -299,6 +311,38 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await viewer.get_by_role("button",name="允許觀看").click()
                 await expect(host.locator("#stage")).to_be_visible()
 
+            finally:
+                await browser.close()
+
+
+class PhoneDirectorySmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_two_legacy_records_do_not_make_two_connected_computers(self):
+        async with TestServer(create_app("host", RecordingDesktop())) as site, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None)
+            try:
+                page = await browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True)
+                await page.add_init_script("""window.PhoneDevices = {
+                    name: () => 'SM-S9280',
+                    sessionState: () => JSON.stringify({peers: [], lan: -1, listening: false}),
+                    update: () => JSON.stringify(['A','B'].map(id => ({
+                      listen:id.repeat(32), dial:id.toLowerCase().repeat(32), address:'https://relay.example',
+                      name:'我的電腦', grant:''}))) };""")
+                await page.goto(str(site.make_url("/online.html")))
+                await expect(page.locator("#self-name")).to_have_text("SM-S9280")
+                await expect(page.locator("#connected-count")).to_have_text("0")
+                await expect(page.locator("#status")).to_have_text("未連線")
+                await expect(page.locator("#device-count")).to_have_text("2")
+                await expect(page.locator("#remembered button")).to_have_count(0)
+                await expect(page.get_by_text("我的電腦", exact=True)).to_have_count(0)
+                await expect(page.locator("#legacy-list")).to_be_hidden()
+                await page.locator("#legacy summary").click()
+                await expect(page.locator("#legacy-list button")).to_have_count(2)
+                await page.locator("#legacy-list button").first.click()
+                await expect(page.locator("#device-title")).to_have_text("未命名的配對紀錄 1")
+                await page.evaluate("""() => {PhoneDevices.sessionState = () => JSON.stringify({
+                    peers: [{name:'書房電腦', control:true}], lan:-1, listening:true}); refreshDashboard();}""")
+                await expect(page.locator("#connected-count")).to_have_text("1")
+                await expect(page.locator("#connected-list")).to_contain_text("書房電腦")
             finally:
                 await browser.close()
 

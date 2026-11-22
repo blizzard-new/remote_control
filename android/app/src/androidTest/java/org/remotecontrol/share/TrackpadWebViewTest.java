@@ -19,7 +19,7 @@ public class TrackpadWebViewTest {
     private final Instrumentation test = InstrumentationRegistry.getInstrumentation();
 
     @Test public void oneNativeEventReachesThePageOnceWithBothFractionalAxes() throws Exception {
-        Intent intent = new Intent(test.getTargetContext(), DesktopViewerActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Intent intent = new Intent(test.getTargetContext(), LanViewerActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         DesktopViewerActivity activity = (DesktopViewerActivity) test.startActivitySync(intent);
         AtomicReference<TrackpadWebView> current = new AtomicReference<>();
         CountDownLatch ready = new CountDownLatch(1);

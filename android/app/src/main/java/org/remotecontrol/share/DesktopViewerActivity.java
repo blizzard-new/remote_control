@@ -11,7 +11,8 @@ import android.webkit.*;
 import android.widget.*;
 import java.io.ByteArrayInputStream;
 
-public final class DesktopViewerActivity extends Activity {
+public class DesktopViewerActivity extends Activity {
+    private ScreenInsets insets;
     private LinearLayout page;
     private TrackpadWebView viewer;
     private boolean immersive;
@@ -24,6 +25,7 @@ public final class DesktopViewerActivity extends Activity {
 
     private void fullScreen(boolean active) {
         immersive = active;
+        insets.setImmersive(active);
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             android.view.WindowInsetsController bars = getWindow().getInsetsController();
             if (bars == null) return;
@@ -35,7 +37,7 @@ public final class DesktopViewerActivity extends Activity {
         } else {
             getWindow().getDecorView().setSystemUiVisibility(active
                 ? android.view.View.SYSTEM_UI_FLAG_FULLSCREEN | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : android.view.View.SYSTEM_UI_FLAG_VISIBLE);
+                    | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : ScreenInsets.LIGHT_BARS);
         }
     }
 
@@ -48,13 +50,13 @@ public final class DesktopViewerActivity extends Activity {
         super.onCreate(savedInstanceState);
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        setContentView(page);
+        insets = new ScreenInsets(this, page);
         if(onlineMode()) showViewer("https://appassets.androidplatform.net/online.html");
         else addressForm("", null);
     }
 
-    private boolean onlineMode() {
-        return getIntent().getBooleanExtra("online",false) || android.content.Intent.ACTION_MAIN.equals(getIntent().getAction());
+    protected boolean onlineMode() {
+        return true;
     }
 
     private void addressForm(String address, String error) {
@@ -174,6 +176,12 @@ public final class DesktopViewerActivity extends Activity {
         closing.destroy();
     }
 
+    @Override protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (onlineMode() && viewer != null) viewer.evaluateJavascript("window.openDeviceList?.()", null);
+    }
+
     @Override public void onPause() {
         if (viewer != null) viewer.onPause();
         super.onPause();
@@ -181,7 +189,10 @@ public final class DesktopViewerActivity extends Activity {
 
     @Override public void onResume() {
         super.onResume();
-        if (viewer != null) viewer.onResume();
+        if (viewer != null) {
+            viewer.onResume();
+            if (onlineMode()) viewer.evaluateJavascript("window.refreshDashboard?.()", null);
+        }
         if (updates != null) updates.resumed();
     }
 

@@ -17,7 +17,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-public final class ShareActivity extends Activity {
+public final class ShareHostActivity extends Activity {
     private static final int SHARE = 1;
     private static final int NOTIFICATIONS = 2;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -51,11 +51,11 @@ public final class ShareActivity extends Activity {
         page.addView(title);
         Button viewer = new Button(this);
         viewer.setText("連接電腦（鍵盤觸控板模式）");
-        viewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class)));
+        viewer.setOnClickListener(v -> startActivity(new Intent(this, LanViewerActivity.class)));
 
         Button onlineViewer=new Button(this);
-        onlineViewer.setText("控制電腦或其他裝置");
-        onlineViewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class).putExtra("online",true)));
+        onlineViewer.setText("返回裝置列表");
+        onlineViewer.setOnClickListener(v -> startActivity(new Intent(this, DesktopViewerActivity.class)));
         page.addView(onlineViewer);
 
         TextView shareHeading = new TextView(this);
@@ -85,7 +85,7 @@ public final class ShareActivity extends Activity {
         page.addView(enable);
         relay=new android.widget.EditText(this);
         relay.setSingleLine(); relay.setHint("配對服務 HTTPS 網址");
-        relay.setText(getPreferences(MODE_PRIVATE).getString("relay", InternetHost.DEFAULT));
+        relay.setText(getSharedPreferences("ShareActivity", MODE_PRIVATE).getString("relay", InternetHost.DEFAULT));
 
         pending=new LinearLayout(this);pending.setOrientation(LinearLayout.VERTICAL);
         copyInvite=new Button(this);copyInvite.setText("複製四位數配對碼");
@@ -103,14 +103,14 @@ public final class ShareActivity extends Activity {
             if(internetMode.isChecked()) {
                 try { DesktopOrigin.viewerUrl(relay.getText().toString().trim()); }
                 catch(IllegalArgumentException e) { relay.setError("請輸入有效的 HTTPS 服務網址"); return; }
-                getPreferences(MODE_PRIVATE).edit().putString("relay",relay.getText().toString().trim()).apply();
+                getSharedPreferences("ShareActivity", MODE_PRIVATE).edit().putString("relay",relay.getText().toString().trim()).apply();
             }
             prompting = true;
             start.setEnabled(false);
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                     != android.content.pm.PackageManager.PERMISSION_GRANTED
-                    && !getPreferences(MODE_PRIVATE).getBoolean("askedNotifications", false)) {
-                getPreferences(MODE_PRIVATE).edit().putBoolean("askedNotifications", true).apply();
+                    && !getSharedPreferences("ShareActivity", MODE_PRIVATE).getBoolean("askedNotifications", false)) {
+                getSharedPreferences("ShareActivity", MODE_PRIVATE).edit().putBoolean("askedNotifications", true).apply();
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATIONS);
             } else askProjection();
         });
@@ -126,7 +126,7 @@ public final class ShareActivity extends Activity {
         more.setOnClickListener(v->options.setVisibility(options.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE));
         updates = new AppUpdates(this, page);
         scroll.addView(page);
-        setContentView(scroll);
+        new ScreenInsets(this, scroll);
     }
 
     private void askProjection() {
@@ -183,13 +183,13 @@ public final class ShareActivity extends Activity {
                 rendered=requests; pending.removeAllViews();
                 for(java.util.Map.Entry<String,String> entry:requests.entrySet()) {
                     String id=entry.getKey();
-                    TextView name=new TextView(ShareActivity.this);name.setText(entry.getValue()+" 請求連線。首次允許後，此裝置可依相同權限直接重連。");pending.addView(name);
+                    TextView name=new TextView(ShareHostActivity.this);name.setText(entry.getValue()+" 請求連線。首次允許後，此裝置可依相同權限直接重連。");pending.addView(name);
                     if(canControl) {
-                        Button control=new Button(ShareActivity.this);control.setText("允許操作");
+                        Button control=new Button(ShareHostActivity.this);control.setText("允許操作");
                         control.setOnClickListener(v -> { host.decide(id,true,true); moveTaskToBack(true); });pending.addView(control);
                     }
                     for(boolean allow:new boolean[]{true,false}) {
-                        Button decision=new Button(ShareActivity.this);decision.setText(allow?"允許觀看":"拒絕");
+                        Button decision=new Button(ShareHostActivity.this);decision.setText(allow?"允許觀看":"拒絕");
                         decision.setOnClickListener(v -> host.decide(id,allow,false));pending.addView(decision);
                     }
                 }

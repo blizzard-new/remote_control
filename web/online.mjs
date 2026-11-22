@@ -16,12 +16,40 @@ $("relay").value = localStorage.getItem("rc-relay") || DEFAULT_RELAY;
 const canvas = $("picture"),
   ctx = canvas.getContext("2d");
 let active = null;
-const defaultName = window.PhoneDevices
-  ? window.PhoneDevices.name()
-  : navigator.platform.includes("Mac")
-    ? "我的 Mac"
-    : "我的電腦";
-$("name").value = localStorage.getItem("rc-name") || defaultName;
+const genericName = (name) =>
+  ["我的電腦", "我的 Mac", "已配對裝置"].includes(name);
+const platforms = new Map([
+  ["Android", "Android"],
+  ["Darwin", "macOS"],
+  ["Windows", "Windows"],
+  ["Linux", "Linux"],
+  ["browser", "瀏覽器"],
+]);
+let platform = window.PhoneDevices ? "Android" : "browser";
+let defaultName = window.PhoneDevices?.name() || "未命名的瀏覽器";
+const previousName = localStorage.getItem("rc-name");
+const customName =
+  localStorage.getItem("rc-custom-name") ||
+  (genericName(previousName) ? "" : previousName);
+$("name").value = customName || defaultName;
+window.PhoneDevices?.setDisplayName?.(customName || "");
+const identityReady = (async () => {
+  if (!token || window.PhoneDevices) return;
+  try {
+    const info = await devices(token, "self");
+    if (!info?.name || !platforms.has(info.platform)) return;
+    if ($("name").value === defaultName && !customName)
+      $("name").value = info.name;
+    defaultName = info.name;
+    platform = info.platform;
+    renderDevices();
+  } catch {
+    // A browser session can still connect using its own display name.
+  }
+})();
+let contactsLoaded = false;
+let listError = false;
+let listRequest = 0;
 let contacts = [],
   selected = null,
   page = "devices",
@@ -39,6 +67,17 @@ function go(destination, showDetail = true) {
   if (page === "connect" && matchMedia("(pointer:fine)").matches)
     $("code").focus();
 }
+function legacyPair(pair) {
+  return !pair.platform && genericName(pair.name);
+}
+function displayName(pair) {
+  if (!legacyPair(pair)) return pair.name;
+  const keys = contacts
+    .filter(legacyPair)
+    .map((c) => c.listen)
+    .sort();
+  return "未命名的配對紀錄 " + (keys.indexOf(pair.listen) + 1);
+}
 function deviceRow(pair) {
   const row = document.createElement("button");
   row.className = "device-row";
@@ -47,10 +86,13 @@ function deviceRow(pair) {
     label = document.createElement("span"),
     name = document.createElement("strong"),
     access = document.createElement("small");
-  icon.dataset.i = /android|三星|平板|手機|galaxy/i.test(pair.name)
-    ? "phone"
-    : "display";
-  name.textContent = pair.name;
+  icon.dataset.i =
+    pair.platform === "Android"
+      ? "phone"
+      : ["Windows", "Darwin", "Linux"].includes(pair.platform)
+        ? "display"
+        : "link-45deg";
+  name.textContent = displayName(pair);
   access.textContent = grantName(pair);
   row.onclick = () => {
     selected = pair;
@@ -80,29 +122,49 @@ function renderDevices() {
   $("self").querySelector("i").dataset.i = window.PhoneDevices
     ? "phone"
     : "pc-display";
-  $("device-count").textContent = String(contacts.length);
-  const found = contacts.filter((c) => c.name.toLowerCase().includes(query));
+  const saved = contacts.filter((c) => !legacyPair(c));
+  const matches = (c) =>
+    (displayName(c) + " " + c.name).toLowerCase().includes(query);
+  const found = saved.filter(matches);
+  const legacy = contacts.filter((c) => legacyPair(c) && matches(c));
+  $("device-count").textContent = contactsLoaded
+    ? String(contacts.length)
+    : "…";
   $("remembered").replaceChildren(...found.map(deviceRow));
-  $("list-empty").hidden = !!found.length;
-  $("list-empty").textContent = query
-    ? "找不到符合的裝置。"
-    : "首次配對後，裝置會出現在這裡。";
-  $("device-title").textContent = selected?.name || name;
+  $("legacy").hidden = !legacy.length;
+  $("legacy-count").textContent = String(legacy.length);
+  $("legacy-list").replaceChildren(...legacy.map(deviceRow));
+  $("list-empty").hidden = !!(found.length || legacy.length);
+  $("list-empty").textContent = !contactsLoaded
+    ? listError
+      ? "無法讀取配對紀錄。"
+      : "正在讀取配對紀錄…"
+    : query
+      ? "找不到符合的配對紀錄。"
+      : "尚無配對紀錄。";
+  $("device-title").textContent = selected ? displayName(selected) : name;
   $("detail-type").textContent = selected ? "已配對裝置" : "本機裝置";
   $("device-subtitle").textContent = selected
     ? grantName(selected) + " · " + new URL(selected.address).hostname
-    : window.PhoneDevices
-      ? "Android · 這台手機或平板"
-      : defaultName.includes("Mac")
-        ? "macOS · 這台電腦"
-        : "桌面版 · 這台電腦";
+    : platforms.get(platform) + " · 本機裝置";
   $("hostbox").hidden = !!selected || !token || (active && !active.host);
   $("phone-share").hidden = !window.PhoneDevices || !!selected;
   $("forget").hidden = !selected;
 }
 async function refreshDevices(action, item) {
-  const loaded = await devices(token, action, item);
-  if (!Array.isArray(loaded)) throw Error("無法儲存配對，請先解除舊裝置。");
+  const requestId = ++listRequest;
+  let loaded;
+  try {
+    loaded = await devices(token, action, item);
+    if (!Array.isArray(loaded)) throw Error("無法存取配對紀錄。");
+  } catch (err) {
+    listError = true;
+    renderDevices();
+    throw err;
+  }
+  if (requestId !== listRequest) return;
+  contactsLoaded = true;
+  listError = false;
   contacts = loaded;
   renderDevices();
 }
@@ -116,7 +178,11 @@ $("search").oninput = () => {
   go("devices", false);
 };
 $("name").onchange = () => {
-  localStorage.setItem("rc-name", $("name").value.trim() || defaultName);
+  const value = $("name").value.trim();
+  localStorage.setItem("rc-custom-name", value);
+  localStorage.removeItem("rc-name");
+  window.PhoneDevices?.setDisplayName?.(value);
+  $("name").value = value || defaultName;
   renderDevices();
 };
 for (const button of document.querySelectorAll("nav button"))
@@ -137,7 +203,10 @@ $("action-settings").onclick = () => go("settings");
 $("phone-share").onclick = () => window.PhoneDevices?.openHost();
 $("forget").onclick = async () => {
   const pair = selected;
-  if (!pair || !confirm("解除與「" + pair.name + "」的配對並結束連線？"))
+  if (
+    !pair ||
+    !confirm("解除與「" + displayName(pair) + "」的配對並結束連線？")
+  )
     return;
   try {
     await refreshDevices("forget", pair);
@@ -190,7 +259,7 @@ function closeSession(s, message) {
 
   $("devices").replaceChildren();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  $("status").textContent = "待命";
+  renderConnections();
   $("cancel").hidden = true;
   $("stats").textContent = "正在接收畫面";
   $("video-menu").open = false;
@@ -204,7 +273,7 @@ function begin(host) {
     peers: new Map(),
     abort: new AbortController(),
   });
-  $("status").textContent = "正在連線";
+  renderConnections();
   $("joinbox").hidden = false;
   $("start").hidden = true;
   $("connect").disabled = !host;
@@ -223,20 +292,76 @@ function begin(host) {
 function safeText(value, len = 60) {
   return typeof value === "string" ? value.slice(0, len) : "";
 }
-function hostStatus(s) {
-  if (active !== s || !s.host) return;
-  const peers = [...s.peers.values()].filter((p) => p.approved);
-  $("status").textContent = !peers.length
-    ? "等候連線"
-    : peers.some((p) => p.control)
-      ? "遠端操作中 · " + peers.length
-      : "觀看中 · " + peers.length;
+let phoneState = { peers: [], lan: 0, listening: false };
+function renderConnections() {
+  const peers = [...(active?.peers.values() || [])].filter((p) => p.approved);
+  const rows = peers.map((p) => ({
+    name: p.name,
+    control: p.control,
+    incoming: active.host,
+  }));
+  for (const p of phoneState.peers) rows.push({ ...p, incoming: true });
+  const lan = Math.max(0, phoneState.lan);
+  const count = rows.length + lan;
+  const lines = rows.map((p) => {
+    const operation = p.incoming
+      ? p.control
+        ? "正在操作本機"
+        : "正在觀看本機"
+      : p.control
+        ? "正在操作對方"
+        : "正在觀看對方";
+    const name = genericName(p.name) || !p.name ? "對方裝置" : p.name;
+    return name + " · " + operation;
+  });
+  if (lan) lines.push("區網觀看連線 · " + lan);
+  $("connected-list").replaceChildren(
+    ...lines.map((line) => {
+      const p = document.createElement("p");
+      p.textContent = line;
+      return p;
+    }),
+  );
+  $("connected-count").textContent = String(count);
+  $("status").dataset.connected = String(count > 0);
+  $("status").textContent = count
+    ? (rows.some((p) => p.incoming && p.control) ? "遠端操作中" : "已連線") +
+      " · " +
+      count
+    : active?.ready || phoneState.listening
+      ? "等候連線"
+      : active
+        ? "正在連線"
+        : "未連線";
+}
+function syncPhone() {
+  if (!window.PhoneDevices?.sessionState) return;
+  const next = JSON.parse(window.PhoneDevices.sessionState());
+  if (JSON.stringify(phoneState) === JSON.stringify(next)) return;
+  phoneState = next;
+  renderConnections();
+}
+window.openDeviceList = () => {
+  if (active && !active.host) return;
+  selected = null;
+  renderDevices();
+  go("devices", false);
+};
+window.refreshDashboard = () => {
+  syncPhone();
+  refreshDevices().catch((err) => say(err.message));
+};
+if (window.PhoneDevices) {
+  syncPhone();
+  setInterval(() => {
+    if (!document.hidden) syncPhone();
+  }, 1000);
 }
 function peerLeft(s, id) {
   const p = s.peers.get(id);
   if (!p) return;
   s.peers.delete(id);
-  hostStatus(s);
+  renderConnections();
   if (s.host && ![...s.peers.values()].some((v) => v.approved)) {
     s.reading = false;
     s.hasFrame = false;
@@ -256,7 +381,8 @@ async function connectRelay(s) {
     ready(code) {
       if (active !== s) return;
       clearTimeout(s.deadline);
-      hostStatus(s);
+      s.ready = true;
+      renderConnections();
       $("invitation").hidden = false;
       $("invite").value = code;
       say("將邀請碼交給另一台已安裝的裝置。");
@@ -273,7 +399,8 @@ async function connectRelay(s) {
           viewOnly: !!s.viewOnly,
           avc: typeof VideoDecoder === "function",
           ...profile(),
-          name: $("name").value.trim(),
+          name: $("name").value.trim() || defaultName,
+          platform,
         });
         say(
           s.pair?.check
@@ -332,6 +459,7 @@ async function connectRelay(s) {
         if (m.t === "request" && !p.ws) {
           p.profile = profile(m);
           p.viewOnly = m.viewOnly === true;
+          p.platform = platforms.has(m.platform) ? m.platform : "";
           return request(s, p, safeText(m.name, 48));
         }
         if (!p.approved) return;
@@ -356,19 +484,25 @@ async function connectRelay(s) {
           tuneSender(s, p);
         } else if (m.t === "direct") p.direct = m.on === true;
       } else if (m.t === "approved" && !p.approved) {
-        if (s.pair && !s.pair.saved && m.remembered) {
+        p.name = safeText(m.name) || s.pair?.name || "已配對裝置";
+        if (s.pair && m.remembered) {
           const { listen, dial } = s.pair;
           try {
-            await refreshDevices("save", {
+            await refreshDevices(s.pair.saved ? "identify" : "save", {
               listen,
               dial,
               address,
-              name: safeText(m.name) || "已配對裝置",
+              name: p.name,
+              platform: platforms.has(m.platform)
+                ? m.platform
+                : s.pair.platform || "",
+              grant: s.pair.grant || "",
             });
           } catch (err) {
             say(err.message);
           }
         }
+        if (active !== s || s.peers.get(id) !== p) return;
         clearTimeout(p.timeout);
         p.approved = true;
         p.control = m.control === true;
@@ -377,7 +511,7 @@ async function connectRelay(s) {
         $("cancel").hidden = true;
         mobileView(true);
         canvas.focus({ preventScroll: true });
-        $("status").textContent = "已連線";
+        renderConnections();
         say(
           p.control
             ? "已獲准操作。點一下可操作該位置，雙指可捲動。"
@@ -493,19 +627,25 @@ function request(s, p, name) {
       clearTimeout(p.timeout);
       p.control = m.control;
       p.approved = true;
-      hostStatus(s);
+      renderConnections();
       renderRequest(s, p);
       let remembered = !!p.pair?.saved;
-      if (p.pair && (!remembered || p.localGrant)) {
+      if (p.pair) {
         const { listen, dial } = p.pair;
         try {
-          await refreshDevices("save", {
-            listen,
-            dial,
-            address: s.address,
-            grant: p.localGrant || "",
-            name: p.name,
-          });
+          await refreshDevices(
+            remembered && !p.localGrant ? "identify" : "save",
+            {
+              listen,
+              dial,
+              address: s.address,
+              grant:
+                p.localGrant ||
+                (contacts.find((c) => c.listen === listen)?.grant ?? ""),
+              platform: p.platform || p.pair.platform || "",
+              name: p.name,
+            },
+          );
           s.relay.remember(p.pair);
           remembered = true;
         } catch (err) {
@@ -518,6 +658,7 @@ function request(s, p, name) {
         keyboard: !!s.cap?.keyboard,
         remembered,
         name: $("name").value.trim() || defaultName,
+        platform,
       });
       nextFrame(s);
       direct(s, p).catch(() => {
@@ -535,7 +676,7 @@ function renderRequest(s, p) {
   row.className = "card device";
   const name = document.createElement("strong");
   name.textContent = p.pair?.saved
-    ? p.pair.name + "（已配對）"
+    ? p.name + "（已配對）"
     : p.name + (p.pair?.check ? " · 核對 " + p.pair.check : "");
   row.append(name);
   const button = (label, fn) => {
@@ -877,7 +1018,8 @@ async function joinDevice(saved, viewOnly = false) {
   const s = begin(false);
   s.viewOnly = viewOnly;
   try {
-    localStorage.setItem("rc-name", $("name").value.trim() || defaultName);
+    await identityReady;
+    if (s !== active) return;
     const value = $("code").value.trim();
     if (saved) {
       $("relay").value = saved.address;
@@ -987,7 +1129,7 @@ ime.onbeforeinput = (e) => {
   }
 };
 $("keyboard-button").onclick = () => keyboard(ime.hidden);
-standby();
+identityReady.then(standby);
 
 if (window.PhoneUpdates) {
   $("updates").hidden = false;

@@ -133,7 +133,7 @@ public final class ProjectionSmokeTest {
     }
 
     private void showHost() {
-        Intent show = new Intent(context, ShareActivity.class)
+        Intent show = new Intent(context, ShareHostActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
         context.startActivity(show);
         device.waitForIdle();

@@ -9,13 +9,16 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security_config">
         <provider android:name=".UpdatePackage" android:authorities="${applicationId}.update" android:exported="false" android:grantUriPermissions="true"/>
-        <activity android:name=".ShareActivity" android:exported="false"/>
-        <activity android:name=".DesktopViewerActivity" android:exported="true" android:configChanges="orientation|keyboard|keyboardHidden|screenSize|smallestScreenSize|screenLayout">
+        <activity android:name=".ShareHostActivity" android:exported="false"/>
+        <activity android:name=".LanViewerActivity" android:exported="false" android:configChanges="orientation|keyboard|keyboardHidden|screenSize|smallestScreenSize|screenLayout"/>
+        <activity android:name=".DesktopViewerActivity" android:launchMode="singleTask" android:exported="true" android:configChanges="orientation|keyboard|keyboardHidden|screenSize|smallestScreenSize|screenLayout">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Older launcher shortcuts still point to this component. -->
+        <activity-alias android:name=".ShareActivity" android:targetActivity=".DesktopViewerActivity" android:exported="true"/>
         <service android:name=".PhoneControl" android:exported="true"
             android:label="@string/phone_control_label" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>

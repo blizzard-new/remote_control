@@ -32,7 +32,7 @@
         </nav>
         <div class="rail-bottom">
           <i data-i="shield-check"></i
-          ><span>Uniway Remote<small>版本 0.5.0</small></span>
+          ><span>Uniway Remote<small>版本 0.5.1</small></span>
         </div>
       </aside>
       <header class="top">
@@ -46,7 +46,7 @@
         /></label>
         <button class="add" id="add">
           <i data-i="plus-circle"></i>新增連線</button
-        ><span id="status" role="status">待命</span>
+        ><span id="status" role="status">未連線</span>
       </header>
       <section class="directory" aria-label="裝置列表">
         <div class="directory-title">
@@ -58,10 +58,21 @@
           <i data-i="pc-display"></i
           ><span><strong id="self-name"></strong><small>本機裝置</small></span>
         </button>
+        <section aria-labelledby="connected-title" aria-live="polite">
+          <h2 id="connected-title">
+            目前連線 <span id="connected-count">0</span>
+          </h2>
+          <div id="connected-list"></div>
+        </section>
         <div id="known">
-          <h2>我的裝置 <span id="device-count">0</span></h2>
+          <h2>已儲存的配對 <span id="device-count">…</span></h2>
           <div id="remembered"></div>
-          <p id="list-empty">首次配對後，裝置會出現在這裡。</p>
+          <p id="list-empty">正在讀取配對紀錄…</p>
+          <details id="legacy" hidden>
+            <summary>舊版配對紀錄 <span id="legacy-count"></span></summary>
+            <p>舊版使用了預設名稱。重新連到已更新的對方後，即可辨識名稱。</p>
+            <div id="legacy-list"></div>
+          </details>
         </div>
       </section>
       <main class="detail">

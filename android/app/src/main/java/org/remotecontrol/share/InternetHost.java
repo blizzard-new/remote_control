@@ -37,6 +37,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   private byte[] latestFrame;
   private boolean closed, ready;
   volatile String grant = "";
+  java.util.function.BiConsumer<String, String> identify = (name, platform) -> {};
+  java.util.function.Supplier<String> displayName = () -> android.os.Build.MODEL;
 
   InternetHost(String address, Consumer<String> stopped) {
     this(address, stopped, new OkHttpClient.Builder().pingInterval(22, TimeUnit.SECONDS).build());
@@ -95,6 +97,16 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     return count;
   }
 
+  synchronized void appendConnected(org.json.JSONArray out) throws org.json.JSONException {
+    for (Peer p : peers.values())
+      if (p.approved) out.put(new JSONObject().put("name", p.name).put("control", p.control));
+  }
+
+  synchronized String platform(int id) {
+    Peer peer = peers.get(id);
+    return peer == null ? "" : peer.platform;
+  }
+
   synchronized boolean requestedControl(int id) {
     Peer peer = peers.get(id);
     return peer != null && !peer.viewOnly;
@@ -108,6 +120,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     if (p == null || p.name == null || p.approved) return;
     try {
       if (allow) {
+        if (remembered) identify.accept(p.name, p.platform);
         p.approved = true;
         p.control = control && !p.viewOnly && PhoneControl.claim(p);
         send(
@@ -116,7 +129,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
             new JSONObject()
                 .put("t", "approved")
                 .put("control", p.control)
-                .put("name", android.os.Build.MODEL)
+                .put("name", displayName.get())
+                .put("platform", "Android")
                 .put("remembered", remembered)
                 .toString()
                 .getBytes(StandardCharsets.UTF_8));
@@ -261,6 +275,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
           return;
         }
         p.name = name;
+        p.platform = m.optString("platform");
         p.profile(m);
         p.viewOnly = m.optBoolean("viewOnly");
         if ("view".equals(grant) || "control".equals(grant)) decide(id, true, "control".equals(grant), true);
@@ -341,7 +356,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
       edge = value == 960 || value == 1280 ? value : 1920;
       fps = m.optInt("fps", 30) == 60 ? 60 : 30;
     }
-    String name;
+    String name, platform = "";
 
     Peer(int id, byte[] tx, byte[] rx) {
       this.id = id;

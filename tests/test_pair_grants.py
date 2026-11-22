@@ -19,3 +19,17 @@ class PairGrantTests(unittest.TestCase):
                 update(path,"save",{**item,"grant":"admin"})
             self.assertEqual(update(path,"forget",item),[])
             self.assertEqual(update(path,"save",item)[0]["grant"],"")
+
+    def test_refresh_identity_preserves_permissions_and_cannot_restore_forgotten_record(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "db"
+            old = dict(listen="A"*32, dial="B"*32, name="我的電腦", address="https://relay.example", grant="view")
+            update(path, "save", old)
+            new = {**old, "name": "書房電腦", "platform": "Windows", "grant": "control"}
+            self.assertEqual(update(path, "identify", new), [{**new, "grant": "view"}])
+            with self.assertRaises(ValueError):
+                update(path, "identify", {**new, "dial": "C"*32})
+            update(path, "forget", old)
+            with self.assertRaises(ValueError):
+                update(path, "identify", new)
+            self.assertEqual(update(path, "list", {}), [])
