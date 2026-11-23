@@ -7,6 +7,9 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.SystemClock;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -14,9 +17,11 @@ import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.security.SecureRandom;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
 import okhttp3.mockwebserver.*;
@@ -38,29 +43,35 @@ public class PhoneCodeTest {
     HandshakeCertificates tls = new HandshakeCertificates.Builder().heldCertificate(cert).build();
     HandshakeCertificates trust =
         new HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate()).build();
-    LinkedBlockingQueue<String> registrations = new LinkedBlockingQueue<>();
+    SecureRandom random = new SecureRandom();
+    byte[] seed = new byte[24], reverse = new byte[24];
+    random.nextBytes(seed);
+    random.nextBytes(reverse);
+    ProjectionViewer viewer = new ProjectionViewer(seed);
+    PhoneDevices contacts = new PhoneDevices(context);
+    JSONObject contact =
+        new JSONObject()
+            .put("listen", PinDirectory.b64(seed))
+            .put("dial", PinDirectory.b64(reverse))
+            .put("platform", "Darwin")
+            .put("name", "Mac")
+            .put("grant", "view");
     SharedPreferences prefs = context.getSharedPreferences("ShareActivity", Context.MODE_PRIVATE);
     String oldAddress = prefs.getString("relay", null);
     try (MockWebServer relay = new MockWebServer()) {
       relay.useHttps(tls.sslSocketFactory(), false);
-      relay.enqueue(
-          new MockResponse()
-              .withWebSocketUpgrade(
-                  new WebSocketListener() {
-                    @Override
-                    public void onMessage(WebSocket ws, String registration) {
-                      registrations.add(registration);
-                      ws.send("{\"t\":\"ready\"}");
-                    }
-
-                    @Override
-                    public void onClosing(WebSocket ws, int code, String reason) {
-                      ws.close(code, null);
-                    }
-                  }));
+      relay.setDispatcher(
+          new okhttp3.mockwebserver.Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+              return new MockResponse().withWebSocketUpgrade(viewer);
+            }
+          });
       relay.start();
       String address = relay.url("/").toString().replaceFirst("/$", "");
       prefs.edit().putString("relay", address).commit();
+      contact.put("address", address);
+      assertNotEquals("null", contacts.update("save", contact.toString()));
       PhoneShare preview =
           PhoneShare.prepare(
               context,
@@ -81,7 +92,7 @@ public class PhoneCodeTest {
         UiObject2 codeButton = ui.wait(Until.findObject(By.text("我的手機連線碼")), 12000);
         assertNotNull("Phone code on the device directory", codeButton);
         codeButton.click();
-        String registration = registrations.poll(8, TimeUnit.SECONDS);
+        String registration = viewer.pins.poll(8, TimeUnit.SECONDS);
         assertNotNull(registration);
         UiObject2 label = ui.wait(Until.findObject(By.textContains("手機連線碼　")), 8000);
         assertNotNull(label);
@@ -96,6 +107,8 @@ public class PhoneCodeTest {
             new JSONObject(registration).getString("room"));
         assertFalse(CaptureService.status.running);
         assertFalse(preview.sharing());
+        assertEquals("projection", viewer.notices.poll(8, TimeUnit.SECONDS).getString("reason"));
+        assertTrue(viewer.images.isEmpty());
         ui.findObject(By.text("開放整個螢幕連線")).click();
         UiObject2 consent = ui.wait(Until.findObject(By.res("android", "button1")), 8000);
         assertNotNull("Android projection consent", consent);
@@ -106,6 +119,19 @@ public class PhoneCodeTest {
         assertSame(preview, CaptureService.online);
         assertTrue(preview.sharing());
         assertEquals(code, CaptureService.online.invitation());
+        assertEquals("approved", viewer.notices.poll(8, TimeUnit.SECONDS).getString("t"));
+        context.startActivity(
+            new Intent()
+                .setClassName(
+                    inst.getContext().getPackageName(),
+                    "org.remotecontrol.share.test.GesturePadActivity")
+                .putExtra("colorPattern", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        File fixture = new File(context.getCacheDir(), "verified-phone-screen.jpg");
+        byte[] frame = visiblePhoneFrame(viewer);
+        try (FileOutputStream file = new FileOutputStream(fixture)) {
+          file.write(frame);
+        }
       } finally {
         context.stopService(new Intent(context, CaptureService.class));
         long end = SystemClock.elapsedRealtime() + 5000;
@@ -114,8 +140,31 @@ public class PhoneCodeTest {
         PhoneShare.releasePreview(preview);
       }
     } finally {
+      contacts.update("forget", contact.toString());
       prefs.edit().putString("relay", oldAddress).commit();
       ui.pressHome();
     }
+  }
+
+  private static byte[] visiblePhoneFrame(ProjectionViewer viewer) throws InterruptedException {
+    long deadline = SystemClock.elapsedRealtime() + 18000;
+    while (SystemClock.elapsedRealtime() < deadline) {
+      byte[] frame = viewer.images.poll(500, TimeUnit.MILLISECONDS);
+      if (frame == null) continue;
+      Bitmap image = BitmapFactory.decodeByteArray(frame, 0, frame.length);
+      if (image == null) continue;
+      try {
+        int left = image.getPixel(image.getWidth() / 4, image.getHeight() / 2);
+        int right = image.getPixel(3 * image.getWidth() / 4, image.getHeight() / 2);
+        if (Color.green(left) > 160
+            && Color.red(left) < 65
+            && Color.red(right) > 160
+            && Color.green(right) < 85) return frame;
+      } finally {
+        image.recycle();
+      }
+    }
+    throw new AssertionError(
+        "The viewer never received both visible colors of the projected Android app");
   }
 }

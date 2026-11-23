@@ -20,7 +20,11 @@ if (token) $("lan").href = "/#host=" + encodeURIComponent(token);
 $("relay").value = localStorage.getItem("rc-relay") || DEFAULT_RELAY;
 const canvas = $("picture"),
   ctx = canvas.getContext("2d");
-let active = null;
+let hostSession = null;
+let viewerSession = null;
+function current(s) {
+  return s === (s.host ? hostSession : viewerSession);
+}
 const genericName = (name) =>
   ["我的電腦", "我的 Mac", "已配對裝置"].includes(name);
 const platforms = new Map([
@@ -48,6 +52,7 @@ const identityReady = (async () => {
     defaultName = info.name;
     platform = info.platform;
     renderDevices();
+    if (page === "settings" && platform === "Darwin") macPermissions("check");
   } catch {
     // A browser session can still connect using its own display name.
   }
@@ -70,6 +75,8 @@ function go(destination, showDetail = true) {
   $("detail-panel").hidden = page !== "devices";
   $("connect-panel").hidden = page !== "connect";
   $("settings-panel").hidden = page !== "settings";
+  if (page === "settings" && token && platform === "Darwin")
+    macPermissions("check");
   if (page === "connect" && matchMedia("(pointer:fine)").matches)
     $("code").focus();
 }
@@ -153,8 +160,10 @@ function renderDevices() {
   $("device-subtitle").textContent = selected
     ? grantName(selected) + " · " + new URL(selected.address).hostname
     : platforms.get(platform) + " · 本機裝置";
-  $("hostbox").hidden = !!selected || !token || (active && !active.host);
+  $("hostbox").hidden = !!selected || !token || viewerSession;
   $("phone-share").hidden = !window.PhoneDevices || !!selected;
+  $("action-view").querySelector("span").textContent =
+    selected?.platform === "Android" ? "觀看手機畫面" : "觀看模式";
   $("forget").hidden = !selected;
 }
 async function refreshDevices(action, item) {
@@ -173,6 +182,7 @@ async function refreshDevices(action, item) {
   listError = false;
   contacts = loaded;
   renderDevices();
+  renderConnections();
 }
 $("self").onclick = () => {
   selected = null;
@@ -207,6 +217,56 @@ $("action-view").onclick = () =>
     ? joinDevice(selected, true)
     : ((requestViewOnly = true), go("connect"));
 $("action-settings").onclick = () => go("settings");
+
+let readingMacPermissions = false;
+async function macPermissions(action) {
+  if (readingMacPermissions || platform !== "Darwin" || !token) return;
+  if (
+    action === "relaunch" &&
+    (viewerSession || hostSession?.peers.size) &&
+    !confirm("重新開啟 RemoteControl 會結束這個程式目前的連線。現在重新開啟？")
+  )
+    return;
+  readingMacPermissions = true;
+  $("mac-permissions").hidden = false;
+  try {
+    const response = await fetch("/api/mac-permissions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Host-Token": token },
+      body: JSON.stringify({ action }),
+    });
+    if (!response.ok)
+      throw Error(
+        "無法讀取目前程序的權限，請使用從「應用程式」開啟的新版 RemoteControl 分頁。",
+      );
+    const result = await response.json();
+    if (result.relaunching) {
+      $("mac-access").textContent =
+        "已要求重新開啟。請使用新開啟的 RemoteControl 分頁。";
+      return;
+    }
+    $("mac-app-path").textContent = "目前執行　" + result.application;
+    const status = (allowed) => (allowed ? "已允許" : "尚未取得");
+    $("mac-access").textContent =
+      "輔助使用 " +
+      status(result.accessibility) +
+      "　鍵鼠事件 " +
+      status(result.postEvents) +
+      "　螢幕錄製預檢 " +
+      status(result.screen);
+    $("mac-request").hidden = result.postEvents || result.accessibility;
+    $("mac-relaunch").hidden = !result.relaunch;
+    if (hostSession?.local?.readyState === 1)
+      hostSession.local.send(JSON.stringify({ type: "capabilities" }));
+  } catch (error) {
+    $("mac-access").textContent = error.message;
+  } finally {
+    readingMacPermissions = false;
+  }
+}
+$("mac-check").onclick = () => macPermissions("check");
+$("mac-request").onclick = () => macPermissions("request");
+$("mac-relaunch").onclick = () => macPermissions("relaunch");
 $("phone-share").onclick = () => window.PhoneDevices?.openHost();
 $("phone-code").hidden = !window.PhoneDevices;
 $("phone-code").onclick = $("phone-share").onclick;
@@ -219,7 +279,7 @@ $("forget").onclick = async () => {
     return;
   try {
     await refreshDevices("forget", pair);
-    active?.relay?.forget?.(pair.listen);
+    hostSession?.relay?.forget(pair.listen);
   } catch (err) {
     say(err.message);
   }
@@ -234,17 +294,44 @@ function say(value) {
   $("message").hidden = false;
   $("message").textContent = value;
 }
-function closeSession(s, message, restoreHost = false) {
-  if (active !== s) return;
-  keyboard(false);
-  $("keyboard-button").hidden = true;
-  active = null;
-  mobileView(false);
+function viewerNote(s, message) {
+  if (s !== viewerSession) return;
+  $("joining-note").textContent = message;
+  say(message);
+}
+function closeSession(s, message) {
+  if (!current(s)) return;
+  if (s.host) {
+    hostSession = null;
+    $("stop").hidden = $("invitation").hidden = true;
+    $("start").hidden = false;
+    $("invite").value = "";
+    $("devices").replaceChildren();
+  } else {
+    keyboard(false);
+    viewerSession = null;
+    mobileView(false);
+    $("keyboard-button").hidden =
+      $("joining").hidden =
+      $("stage").hidden =
+      $("leave").hidden =
+        true;
+    $("joinbox").hidden = false;
+    $("connect").disabled = false;
+    $("view-mode").hidden = $("share-request").hidden = true;
+    $("stats").textContent = "正在接收畫面";
+    $("video-menu").open = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    clearTimeout(s.mediaTimer);
+    s.detach?.();
+  }
   s.abort.abort();
   s.relay?.close();
   s.local?.close();
   s.stream?.getTracks().forEach((t) => t.stop());
   for (const p of s.peers.values()) {
+    p.row?.remove();
+    clearTimeout(p.avcTimer);
     p.ws?.close();
     p.pc?.close();
     clearTimeout(p.timeout);
@@ -257,48 +344,30 @@ function closeSession(s, message, restoreHost = false) {
   clearInterval(s.frames);
   clearInterval(s.captureTimer);
   clearInterval(s.permissionTimer);
-  s.detach?.();
-  $("start").hidden = $("connect").disabled = false;
-  $("joinbox").hidden =
-    $("stage").hidden =
-    $("invitation").hidden =
-    $("stop").hidden =
-    $("leave").hidden =
-      true;
-  $("joinbox").hidden = false;
-  $("hostbox").hidden = !token;
-  $("settings").hidden = false;
-  $("invite").value = "";
-
-  $("devices").replaceChildren();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  renderConnections();
-  $("cancel").hidden = true;
   $("pair-again").hidden = true;
-  $("view-mode").hidden = true;
-  $("stats").textContent = "正在接收畫面";
-  $("video-menu").open = false;
+  renderConnections();
   renderDevices();
+  placeHostRequests();
   say(message);
-  if (restoreHost && token && !s.host && s.wasApproved) setTimeout(standby, 0);
 }
 function begin(host) {
-  if (active) throw Error("已有連線。");
-  const s = (active = {
-    host,
-    peers: new Map(),
-    abort: new AbortController(),
-  });
+  const s = { host, peers: new Map(), abort: new AbortController() };
+  if (host) {
+    hostSession = s;
+    $("start").hidden = true;
+    $("stop").hidden = false;
+  } else {
+    viewerSession = s;
+    $("joining").hidden = false;
+    $("joining-title").textContent = "正在連接對方裝置";
+    $("joining-note").textContent = "正在連接配對服務…";
+    $("join-watch").hidden = true;
+    $("cancel").focus({ preventScroll: true });
+    $("connect").disabled = true;
+  }
   renderConnections();
+  placeHostRequests();
   $("pair-again").hidden = true;
-  $("joinbox").hidden = false;
-  $("start").hidden = true;
-  $("connect").disabled = !host;
-  $("settings").hidden = !host;
-  $("hostbox").hidden = !host;
-  $("stop").hidden = !host;
-  $("leave").hidden = host;
-  $("cancel").hidden = host;
   s.deadline = setTimeout(
     () =>
       closeSession(s, "配對服務未回應。請確認兩台裝置的服務網址，然後重試。"),
@@ -311,16 +380,18 @@ function safeText(value, len = 60) {
 }
 let phoneState = { peers: [], lan: 0, listening: false };
 function renderConnections() {
-  const peers = [...(active?.peers.values() || [])].filter((p) => p.approved);
-  const rows = peers.map((p) => ({
-    name: p.name,
-    control: p.control,
-    incoming: active.host,
-  }));
+  const rows = [];
+  for (const session of [hostSession, viewerSession]) {
+    for (const p of session?.peers.values() || []) {
+      if (p.approved) rows.push({ ...p, incoming: session.host });
+    }
+  }
   for (const p of phoneState.peers) rows.push({ ...p, incoming: true });
   const lan = Math.max(0, phoneState.lan);
   const count = rows.length + lan;
-  const lines = rows.map((p) => {
+  const list = rows.map((p) => {
+    const row = document.createElement("p");
+    const name = genericName(p.name) || !p.name ? "對方裝置" : p.name;
     const operation = p.incoming
       ? p.control
         ? "正在操作本機"
@@ -328,28 +399,40 @@ function renderConnections() {
       : p.control
         ? "正在操作對方"
         : "正在觀看對方";
-    const name = genericName(p.name) || !p.name ? "對方裝置" : p.name;
-    return name + " · " + operation;
+    row.textContent = name + " · " + operation;
+    if (p.incoming && p.platform === "Android") {
+      const pair = contacts.find(
+        (c) =>
+          c.listen === p.pair?.listen && c.address === hostSession?.address,
+      );
+      if (pair) {
+        const watch = document.createElement("button");
+        watch.textContent = "觀看手機畫面";
+        watch.onclick = () => joinDevice(pair, true);
+        row.append(watch);
+      }
+    }
+    return row;
   });
-  if (lan) lines.push("區網觀看連線 · " + lan);
-  $("connected-list").replaceChildren(
-    ...lines.map((line) => {
-      const p = document.createElement("p");
-      p.textContent = line;
-      return p;
-    }),
-  );
+  if (lan) {
+    const row = document.createElement("p");
+    row.textContent = "區網觀看連線 · " + lan;
+    list.push(row);
+  }
+  $("connected-list").replaceChildren(...list);
   $("connected-count").textContent = String(count);
   $("status").dataset.connected = String(count > 0);
   $("status").textContent = count
     ? (rows.some((p) => p.incoming && p.control) ? "遠端操作中" : "已連線") +
       " · " +
       count
-    : active?.ready || phoneState.listening
-      ? "等候連線"
-      : active
-        ? "正在連線"
-        : "未連線";
+    : viewerSession
+      ? "正在連線"
+      : hostSession?.ready || phoneState.listening
+        ? "等候連線"
+        : hostSession
+          ? "正在連線"
+          : "未連線";
 }
 function syncPhone() {
   if (!window.PhoneDevices?.sessionState) return;
@@ -359,7 +442,7 @@ function syncPhone() {
   renderConnections();
 }
 window.openDeviceList = () => {
-  if (active && !active.host) return;
+  if (viewerSession) return;
   selected = null;
   renderDevices();
   go("devices", false);
@@ -380,6 +463,7 @@ function peerLeft(s, id) {
   s.peers.delete(id);
   p.ws?.close();
   clearTimeout(p.retryApproval);
+  clearTimeout(p.avcTimer);
   renderConnections();
   if (s.host)
     for (const waiting of s.peers.values())
@@ -393,16 +477,17 @@ function peerLeft(s, id) {
   p.video?.pause();
   clearTimeout(p.timeout);
   p.row?.remove();
-  if (active === s && !s.host) closeSession(s, "分享已結束。", true);
+  placeHostRequests();
+  if (current(s) && !s.host) closeSession(s, "分享已結束。");
 }
 async function connectRelay(s) {
-  const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
+  const address =
+    s.address || new URL($("relay").value.trim()).href.replace(/\/+$/, "");
   s.address = address;
-  $("relay").value = address;
   let transport;
   const events = {
     reconnecting() {
-      if (active !== s) return;
+      if (!current(s)) return;
       s.ready = false;
       $("invitation").hidden = true;
       $("invite").value = "";
@@ -410,7 +495,7 @@ async function connectRelay(s) {
       say("正在重新連接配對服務，請保持這個分頁開啟。");
     },
     ready(code) {
-      if (active !== s) return;
+      if (!current(s)) return;
       clearTimeout(s.deadline);
       s.ready = true;
       renderConnections();
@@ -419,7 +504,7 @@ async function connectRelay(s) {
       say("請保持此分頁開啟。新裝置可輸入四碼，已配對裝置可直接重連。");
     },
     paired(id, pair) {
-      if (active !== s) return;
+      if (!current(s)) return;
       const p = { id, approved: false, pair };
       s.peers.set(id, p);
       p.timeout = setTimeout(() => s.relay.drop(id), 120000);
@@ -428,13 +513,15 @@ async function connectRelay(s) {
         s.relay.json(id, {
           t: "request",
           viewOnly: !!s.viewOnly,
-          avc: typeof VideoDecoder === "function",
+          avc: false,
+          screenRequest: !!window.PhoneDevices,
           ...(s.resume?.length ? { resume: s.resume.map((r) => r.offer) } : {}),
           ...profile(),
           name: $("name").value.trim() || defaultName,
           platform,
         });
-        say(
+        viewerNote(
+          s,
           s.pair?.check
             ? "請與分享端核對 " + s.pair.check + "，並等候同意。"
             : "已向對方送出連線請求。",
@@ -445,24 +532,39 @@ async function connectRelay(s) {
       peerLeft(s, id);
     },
     unavailable() {
-      if (active !== s || s.relay !== transport) return;
+      if (!current(s) || s.relay !== transport) return;
       if (s.pair?.saved) {
         const delays = [1500, 3000, 6000, 10000];
         const attempt = s.attempt || 0;
-        if (attempt < delays.length) {
+        if (
+          attempt < delays.length ||
+          (s.askedPhone && Date.now() < s.waitUntil)
+        ) {
           s.attempt = attempt + 1;
           s.relay = null;
           transport.close();
-          say("正在等候已配對裝置恢復連線…");
-          s.retryTimer = setTimeout(() => {
-            if (active === s)
-              connectRelay(s).catch((err) => closeSession(s, err.message));
-          }, delays[attempt]);
+          viewerNote(
+            s,
+            s.askedPhone
+              ? "正在等候手機開放分享。請在手機點「切換為分享手機」，或在裝置列表點「我的手機連線碼」並開放整個螢幕連線。"
+              : s.pair.platform === "Android"
+                ? "正在尋找手機。請在手機開啟「我的手機連線碼」並開放整個螢幕連線。"
+                : "正在等候已配對裝置恢復連線…",
+          );
+          s.retryTimer = setTimeout(
+            () => {
+              if (current(s))
+                connectRelay(s).catch((err) => closeSession(s, err.message));
+            },
+            delays[Math.min(attempt, delays.length - 1)],
+          );
           return;
         }
         closeSession(
           s,
-          "配對服務找不到這台裝置。請喚醒對方，開啟 Uniway Remote 並保持主機分頁顯示「等候連線」，再按遠端控制。若對方已重新安裝，可使用目前顯示的四碼配對。",
+          s.pair.platform === "Android"
+            ? "手機尚未開放分享。請在手機點「我的手機連線碼」→「開放整個螢幕連線」，再點觀看手機畫面。"
+            : "配對服務找不到這台裝置。請喚醒對方，開啟 Uniway Remote 並保持主機分頁顯示「等候連線」，再按遠端控制。若對方已重新安裝，可使用目前顯示的四碼配對。",
         );
         $("pair-again").hidden = false;
       } else
@@ -473,7 +575,7 @@ async function connectRelay(s) {
         closeSession(s, "與配對服務的網路連線已結束。請確認網路後再試。");
     },
     async packet(id, type, data) {
-      if (active !== s) return;
+      if (!current(s)) return;
       const p = s.peers.get(id);
       if (!p) return;
       if (type === 3 && !s.host && p.approved && !p.noAVC) {
@@ -483,13 +585,13 @@ async function connectRelay(s) {
       if (type === 2) {
         if (!s.host && p.approved && !p.direct && !p.painting) {
           p.painting = true;
-          createImageBitmap(new Blob([data], { type: "image/jpeg" }))
+          decodeJpeg(data)
             .then((image) => {
               try {
-                if (active === s && s.peers.has(id) && !p.direct)
-                  paint(image, image.width, image.height);
+                if (current(s) && s.peers.has(id) && !p.direct)
+                  paint(s, p, image, image.width, image.height, "jpeg");
               } finally {
-                image.close();
+                image.close?.();
               }
             })
             .catch(() => {})
@@ -499,6 +601,19 @@ async function connectRelay(s) {
       }
       if (type !== 1 || data.length > 96000) return;
       const m = JSON.parse(decoder.decode(data));
+      if (
+        !s.host &&
+        p.approved &&
+        m.t === "ask-phone-screen" &&
+        window.PhoneDevices &&
+        !p.screenRequestShown
+      ) {
+        p.screenRequestShown = true;
+        $("share-requester").textContent =
+          "「" + p.name + "」想觀看這支手機的畫面。";
+        $("share-request").hidden = false;
+        return;
+      }
       if (!s.host && !p.approved && m.t === "resume") {
         const match = s.resume?.find((r) => r.answer === m.proof);
         if (!match) return;
@@ -525,25 +640,30 @@ async function connectRelay(s) {
       if (!s.host && m.t === "capture-error" && p.approved) {
         closeSession(
           s,
-          m.platform === "Darwin"
-            ? "Mac 無法擷取螢幕。請在 Mac 的「系統設定 → 隱私權與安全性 → 螢幕與系統音訊錄製」允許 RemoteControl，依系統提示重新開啟，再點遠端控制。"
-            : "對方暫時無法擷取螢幕。請在對方裝置檢查螢幕錄製權限後，再點遠端控制。",
+          m.platform === "Darwin" && m.reason === "permission"
+            ? "macOS 回報螢幕擷取被拒絕。若「螢幕與系統錄音」已開，請在 Mac 的進階設定重新開啟 RemoteControl。"
+            : "對方暫時無法擷取畫面。請確認對方螢幕已喚醒，再重新連線。",
         );
         return;
       }
       if (!s.host && !p.approved && m.t === "control-pending") {
-        say(
+        $("join-watch").hidden =
+          s.viewOnly || !m.canView || !["access", "busy"].includes(m.reason);
+        viewerNote(
+          s,
           m.reason === "busy"
             ? "另一台裝置正在操作。結束操作後，已信任的裝置可自動接上。"
             : m.reason === "projection"
               ? "手機已收到連線。請在手機開啟整個螢幕分享。"
               : m.reason === "access" && m.platform === "Darwin"
-                ? "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」開啟 RemoteControl。開啟後會自動重新檢查。"
-                : m.reason === "access" && m.platform === "Android"
-                  ? "請在手機開啟「遠端桌面觸控操作」，並分享整個螢幕。"
-                  : s.pair?.check
-                    ? "請核對 " + s.pair.check + "，並在對方裝置允許操作。"
-                    : "已送出操作請求，請在對方的主機分頁確認。",
+                ? "Mac 回報目前的 RemoteControl 程序尚無鍵鼠操作權限。若系統開關已開，請在 Mac 的進階設定查看實際執行路徑與權限。"
+                : m.reason === "unavailable"
+                  ? "對方目前無法傳送鍵鼠事件。可在對方檢查顯示器狀態，或先觀看畫面。"
+                  : m.reason === "access" && m.platform === "Android"
+                    ? "請在手機開啟「遠端桌面觸控操作」，並分享整個螢幕。"
+                    : s.pair?.check
+                      ? "請核對 " + s.pair.check + "，並在對方裝置允許操作。"
+                      : "已送出操作請求，請在對方的主機分頁確認。",
         );
         return;
       }
@@ -557,13 +677,20 @@ async function connectRelay(s) {
               s.address,
               p.pair.listen,
             );
-            if (active !== s || s.peers.get(id) !== p) return;
+            if (!current(s) || s.peers.get(id) !== p) return;
             if (proof) return s.relay.json(id, { t: "resume", proof });
           }
           p.profile = profile(m);
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
+          p.screenRequest =
+            m.screenRequest === true && p.platform === "Android";
           return request(s, p, safeText(m.name, 48));
+        }
+        if (m.t === "view-only" && p.localId && !p.approved && !p.claiming) {
+          p.viewOnly = true;
+          renderRequest(s, p);
+          return;
         }
         if (!p.approved) return;
         if (m.t === "quality") {
@@ -588,6 +715,13 @@ async function connectRelay(s) {
         } else if (m.t === "direct") p.direct = m.on === true;
       } else if (m.t === "approved" && !p.approved) {
         p.name = safeText(m.name) || s.pair?.name || "已配對裝置";
+        p.platform = platforms.has(m.platform) ? m.platform : s.pair?.platform;
+        $("joining").hidden = true;
+        $("stage").hidden = false;
+        $("leave").hidden = false;
+        $("first-picture").hidden = false;
+        $("first-picture").textContent =
+          "已連到「" + p.name + "」，正在等候第一張畫面…";
         let saveWarning =
           s.pair && m.remembered === false ? "對方未能儲存這次授權。" : "";
         if (s.pair && m.remembered) {
@@ -603,11 +737,16 @@ async function connectRelay(s) {
                 : s.pair.platform || "",
               grant: s.pair.grant || "",
             });
+            const saved = contacts.find(
+              (c) => c.listen === listen && c.address === address,
+            );
+            if (saved && hostSession?.address === address)
+              hostSession.relay?.remember(saved);
           } catch (err) {
             saveWarning = "本機未能儲存配對，請檢查儲存空間與配對數量。";
           }
         }
-        if (active !== s || s.peers.get(id) !== p) return;
+        if (!current(s) || s.peers.get(id) !== p) return;
         clearTimeout(p.timeout);
         p.approved = true;
         s.wasApproved = true;
@@ -617,7 +756,13 @@ async function connectRelay(s) {
         $("save-warning").hidden = !saveWarning;
         $("joinbox").hidden = true;
         $("stage").hidden = false;
-        $("cancel").hidden = true;
+        s.mediaTimer = setTimeout(() => {
+          if (current(s) && !s.hasPicture)
+            $("first-picture").textContent =
+              p.platform === "Android"
+                ? "手機尚未送達畫面。請保持手機解鎖，從連線碼頁切回主畫面或開啟一般 App。"
+                : "仍在等候對方裝置的畫面。";
+        }, 5000);
         mobileView(true);
         canvas.focus({ preventScroll: true });
         renderConnections();
@@ -627,7 +772,9 @@ async function connectRelay(s) {
             : "已獲准觀看。",
         );
         if (p.control) {
-          s.sendInput = (event) => s.relay.json(id, { t: "input", event });
+          s.sendInput = (event) => {
+            if (s.hasPicture) s.relay.json(id, { t: "input", event });
+          };
           $("keyboard-button").hidden = !m.keyboard;
           s.detach = attachInput(
             canvas,
@@ -646,24 +793,64 @@ async function connectRelay(s) {
       }
     },
   };
-  localStorage.setItem("rc-relay", address);
   if (s.host) {
     s.relay = transport = new HostChannels(address, events);
     await refreshDevices();
-    if (active === s) await s.relay.start(contacts);
+    if (current(s)) await s.relay.start(contacts);
   } else {
     s.relay = transport = new Relay(address, false, s.invite, events);
     await s.relay.start();
   }
 }
-function paint(image, w, h) {
+async function decodeJpeg(bytes) {
+  const blob = new Blob([bytes], { type: "image/jpeg" });
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      /* Try the browser's image loader. */
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = url;
+    });
+    return img;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+function paint(s, p, image, w, h, format) {
+  if (!current(s) || s.peers.get(p.id) !== p || w <= 0 || h <= 0) return;
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
   }
   ctx.drawImage(image, 0, 0, w, h);
-  const s = active;
-  if (s && !s.host) {
+  if (!s.hasPicture) {
+    s.hasPicture = true;
+    clearTimeout(s.mediaTimer);
+    $("first-picture").hidden = true;
+    $("stats").textContent = w + " × " + h;
+  }
+  if (format === "avc") clearTimeout(p.avcTimer);
+  if (
+    format === "jpeg" &&
+    p.platform === "Android" &&
+    !p.avcRequested &&
+    !p.noAVC &&
+    typeof VideoDecoder === "function" &&
+    typeof EncodedVideoChunk === "function"
+  ) {
+    p.avcRequested = true;
+    s.relay.json(p.id, { t: "quality", ...profile(), avc: true });
+    p.avcTimer = setTimeout(() => compatibleVideo(s, p), 5000);
+  }
+  {
     const now = performance.now();
     if (!s.sampleTime) {
       s.sampleTime = now;
@@ -700,7 +887,7 @@ function request(s, p, name) {
   p.ws.onopen = () =>
     p.ws.send(JSON.stringify({ type: "join", name, code: s.localCode }));
   p.ws.onmessage = async (e) => {
-    if (active !== s || !s.peers.has(p.id)) return;
+    if (!current(s) || !s.peers.has(p.id)) return;
     const m = JSON.parse(e.data);
     if (m.type === "pending") {
       p.localId = m.id;
@@ -772,6 +959,15 @@ function canOfferControl(s) {
     eligible(s) && ![...s.peers.values()].some((v) => v.control || v.claiming)
   );
 }
+function placeHostRequests() {
+  const overlay = $("incoming-requests");
+  for (const p of hostSession?.peers.values() || []) {
+    if (!p.row?.isConnected) continue;
+    const container = viewerSession && !p.approved ? overlay : $("devices");
+    if (p.row.parentElement !== container) container.append(p.row);
+  }
+  overlay.hidden = !overlay.querySelector(".device");
+}
 function renderRequest(s, p) {
   p.row?.remove();
   if (!p.approved && p.pair?.saved) {
@@ -816,7 +1012,10 @@ function renderRequest(s, p) {
       s.local.send(JSON.stringify({ type: "approve", id: p.localId, control }));
     };
     const hint = document.createElement("small");
-    hint.textContent = "允許後會記住此裝置與權限，下次可直接連線。";
+    hint.textContent =
+      !p.viewOnly && eligible(s) && platform === "Darwin"
+        ? "macOS 已允許鍵鼠操作。這是此裝置的連線授權，選「允許操作」後會記住。"
+        : "允許後會記住此裝置與權限，下次可直接連線。";
     row.append(hint);
     if (!p.viewOnly) {
       if (canOfferControl(s)) {
@@ -828,7 +1027,7 @@ function renderRequest(s, p) {
         if (!s.permissionTimer)
           s.permissionTimer = setInterval(() => {
             if (
-              active === s &&
+              current(s) &&
               s.local.readyState === 1 &&
               [...s.peers.values()].some(
                 (peer) =>
@@ -844,7 +1043,7 @@ function renderRequest(s, p) {
               s.permissionTimer = null;
             }
           }, 1500);
-        if (platform === "Darwin") {
+        if (platform === "Darwin" && s.cap?.controlReason !== "unavailable") {
           const link = document.createElement("a");
           link.href =
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
@@ -862,12 +1061,13 @@ function renderRequest(s, p) {
         ? p.trustedControl
           ? "busy"
           : "approval"
-        : "access";
+        : s.cap?.controlReason || "access";
       if (p.sentReason !== reason)
         s.relay.json(p.id, {
           t: "control-pending",
           platform,
           reason,
+          canView: true,
         });
       p.sentReason = reason;
     }
@@ -875,6 +1075,7 @@ function renderRequest(s, p) {
     button(p.trustedControl ? "取消等候" : "拒絕", () => s.relay.drop(p.id));
   } else button("中斷連線", () => s.relay.drop(p.id));
   $("devices").append(row);
+  placeHostRequests();
 }
 async function direct(s, p, offer) {
   if (typeof RTCPeerConnection === "undefined" || p.pc || (s.host && !s.stream))
@@ -894,13 +1095,13 @@ async function direct(s, p, offer) {
       v.play().catch(() => {});
       const draw = () => {
         if (
-          active !== s ||
+          !current(s) ||
           !s.peers.has(p.id) ||
           pc.connectionState === "closed"
         )
           return;
         if (v.readyState >= 2 && pc.connectionState === "connected") {
-          paint(v, v.videoWidth, v.videoHeight);
+          paint(s, p, v, v.videoWidth, v.videoHeight, "direct");
           if (!p.direct) {
             p.direct = true;
             s.relay.json(p.id, { t: "direct", on: true });
@@ -933,7 +1134,7 @@ async function direct(s, p, offer) {
       const timer = setTimeout(done, 3500);
       pc.addEventListener("icegatheringstatechange", changed);
     });
-  if (active === s && s.peers.has(p.id))
+  if (current(s) && s.peers.has(p.id))
     s.relay.json(p.id, {
       t: s.host ? "offer" : "answer",
       sdp: pc.localDescription,
@@ -945,14 +1146,15 @@ function mobileView(on) {
   document.body.classList.toggle("remote-viewing", Boolean(immersive));
   window.ViewerScreen?.setActive(Boolean(immersive));
 }
+function compatibleVideo(s, p) {
+  if (p.noAVC || !current(s) || s.peers.get(p.id) !== p) return;
+  clearTimeout(p.avcTimer);
+  p.noAVC = true;
+  if (p.decoder && p.decoder.state !== "closed") p.decoder.close();
+  s.relay.json(p.id, { t: "quality", ...profile(), avc: false });
+}
 function receiveVideo(s, p, bytes) {
-  function fallback() {
-    if (p.noAVC) return;
-    p.noAVC = true;
-    if (p.decoder && p.decoder.state !== "closed") p.decoder.close();
-    if (active === s)
-      s.relay.json(p.id, { t: "quality", ...profile(), avc: false });
-  }
+  const fallback = () => compatibleVideo(s, p);
   if (bytes.length <= 9 || bytes[0] > 1 || typeof VideoDecoder !== "function")
     return fallback();
   try {
@@ -979,8 +1181,10 @@ function receiveVideo(s, p, bytes) {
         p.decoder = new VideoDecoder({
           output: (f) => {
             try {
-              if (active === s && s.peers.get(p.id) === p)
-                paint(f, f.displayWidth, f.displayHeight);
+              if (current(s) && s.peers.get(p.id) === p)
+                paint(s, p, f, f.displayWidth, f.displayHeight, "avc");
+            } catch {
+              fallback();
             } finally {
               f.close();
             }
@@ -1031,13 +1235,13 @@ for (const [id, key, defaultValue] of [
   select.onchange = () => {
     const settings = profile();
     localStorage.setItem("rc-video-" + key, settings[key]);
-    if (active && !active.host)
-      for (const peer of active.peers.values())
+    if (viewerSession)
+      for (const peer of viewerSession.peers.values())
         if (peer.approved)
-          active.relay.json(peer.id, {
+          viewerSession.relay.json(peer.id, {
             t: "quality",
             ...settings,
-            avc: !peer.noAVC && typeof VideoDecoder === "function",
+            avc: !!peer.avcRequested && !peer.noAVC,
           });
   };
 }
@@ -1066,7 +1270,7 @@ async function tuneSender(s, p) {
 }
 function nextFrame(s) {
   const peers = [...s.peers.values()].filter((p) => p.approved && !p.ending);
-  if (active !== s || !peers.length || s.reading || s.local.readyState !== 1)
+  if (!current(s) || !peers.length || s.reading || s.local.readyState !== 1)
     return;
   s.reading = true;
   s.local.send(
@@ -1082,11 +1286,9 @@ function startCapture(s) {
   s.stream = source.captureStream?.(60);
   const fallback = document.createElement("canvas");
   return async (data) => {
-    const image = await createImageBitmap(
-      new Blob([data], { type: "image/jpeg" }),
-    );
+    const image = await decodeJpeg(data);
     try {
-      if (active !== s) return;
+      if (!current(s)) return;
       if (source.width !== image.width || source.height !== image.height) {
         source.width = image.width;
         source.height = image.height;
@@ -1124,17 +1326,17 @@ function startCapture(s) {
           if (!jpeg) continue;
           encoded.set(edge, jpeg);
         }
-        if (active !== s || s.peers.get(p.id) !== p) continue;
+        if (!current(s) || s.peers.get(p.id) !== p) continue;
         p.nextFrame = now + Math.max(1000 / fps - 2, (jpeg.length + 64) / 3800);
         s.relay.send(p.id, 2, jpeg);
       }
     } finally {
-      image.close();
+      image.close?.();
     }
   };
 }
-async function captureFailed(s, reason) {
-  if (active !== s) return;
+async function captureFailed(s, reason, kind = "unavailable") {
+  if (!current(s)) return;
   s.hasFrame = false;
   s.reading = false;
   say(reason || "無法擷取主螢幕，請檢查系統權限後再連線。");
@@ -1142,19 +1344,23 @@ async function captureFailed(s, reason) {
   for (const peer of viewers) peer.ending = true;
   await Promise.all(
     viewers.map(async (peer) => {
-      await s.relay.json(peer.id, { t: "capture-error", platform });
-      if (active === s && s.peers.get(peer.id) === peer) s.relay.drop(peer.id);
+      await s.relay.json(peer.id, {
+        t: "capture-error",
+        platform,
+        reason: kind,
+      });
+      if (current(s) && s.peers.get(peer.id) === peer) s.relay.drop(peer.id);
     }),
   );
 }
 function standby() {
-  if (!token || active) return;
+  if (!token || hostSession) return;
   const s = begin(true);
   s.local = localSocket();
   s.local.binaryType = "arraybuffer";
   s.local.onopen = () => s.local.send(JSON.stringify({ type: "host", token }));
   s.local.onmessage = async (e) => {
-    if (active !== s) return;
+    if (!current(s)) return;
     try {
       if (e.data instanceof ArrayBuffer) {
         try {
@@ -1180,7 +1386,8 @@ function standby() {
         s.frame = startCapture(s);
         await connectRelay(s);
       }
-      if (m.type === "capture-error") await captureFailed(s, m.message);
+      if (m.type === "capture-error")
+        await captureFailed(s, m.message, m.reason);
       if (m.type === "capabilities") {
         const changed =
           JSON.stringify(s.cap) !== JSON.stringify(m.capabilities);
@@ -1200,7 +1407,7 @@ function standby() {
             s.cap = m.capabilities;
             clearTimeout(p.retryApproval);
             p.retryApproval = setTimeout(() => {
-              if (active !== s || s.peers.get(p.id) !== p || p.approved) return;
+              if (!current(s) || s.peers.get(p.id) !== p || p.approved) return;
               p.claiming = false;
               renderRequest(s, p);
             }, 1500);
@@ -1221,37 +1428,63 @@ $("pair-again").onclick = () => {
   $("code").focus();
 };
 $("relay").onchange = () => {
-  if (active?.host && !active.peers.size) {
-    closeSession(active, "");
+  localStorage.setItem("rc-relay", $("relay").value.trim());
+  if (hostSession && !hostSession.peers.size) {
+    closeSession(hostSession, "");
     standby();
   }
 };
 async function joinDevice(saved, viewOnly = false) {
-  if (active?.host && !active.peers.size) closeSession(active, "");
-  if (active) {
+  if (viewerSession) {
     say("請先結束目前的連線。");
     return;
   }
   const s = begin(false);
   s.viewOnly = viewOnly;
+  s.waitUntil = Date.now() + 90000;
+  if (saved)
+    $("joining-title").textContent =
+      (viewOnly ? "觀看" : "連接") + "「" + displayName(saved) + "」";
   try {
     await identityReady;
-    if (s !== active) return;
+    if (!current(s)) return;
     const value = $("code").value.trim();
     if (saved) {
-      $("relay").value = saved.address;
+      s.address = saved.address;
       s.pair = { ...saved, saved: true };
+      const incoming = [...(hostSession?.peers.values() || [])].find(
+        (p) =>
+          p.approved &&
+          p.pair?.listen === saved.listen &&
+          hostSession.address === saved.address &&
+          p.screenRequest,
+      );
+      if (incoming) {
+        s.askedPhone = true;
+        hostSession.relay.json(incoming.id, { t: "ask-phone-screen" });
+      }
     } else if (/^[0-9]{4}$/.test(value)) {
       const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
+      if (
+        hostSession?.ready &&
+        hostSession.address === address &&
+        value === $("invite").value
+      ) {
+        closeSession(
+          s,
+          "這是本機的連線碼。要連接手機，請輸入手機「我的手機連線碼」裡的四碼。",
+        );
+        return;
+      }
       s.pair = await findPin(address, value, s.abort.signal);
       await refreshDevices();
       s.resume = await resumeOffers(contacts, address, s.pair.dial);
     } else {
       const parsed = parseInvite(value, $("relay").value.trim());
-      $("relay").value = parsed.address;
+      s.address = parsed.address;
       s.invite = parsed.invite;
     }
-    if (active !== s) return;
+    if (!current(s)) return;
     if (s.pair) s.invite = s.pair.dial;
     await connectRelay(s);
   } catch (err) {
@@ -1270,21 +1503,37 @@ $("copy").onclick = () =>
   navigator.clipboard
     .writeText($("invite").value)
     .catch(() => say("請手動輸入畫面上的四位數。"));
-$("cancel").onclick =
-  $("stop").onclick =
-  $("leave").onclick =
-    () => {
-      if (active) closeSession(active, "連線已結束。", true);
-    };
+$("join-watch").onclick = () => {
+  const s = viewerSession;
+  if (!s || s.wasApproved) return;
+  s.viewOnly = true;
+  $("join-watch").hidden = true;
+  for (const p of s.peers.values()) s.relay.json(p.id, { t: "view-only" });
+  viewerNote(s, "已改為觀看，正在等候分享端。");
+};
+$("switch-share").onclick = () => {
+  if (viewerSession) closeSession(viewerSession, "正在切換分享方向。");
+  window.PhoneDevices?.openHost();
+};
+$("skip-share").onclick = () => {
+  $("share-request").hidden = true;
+};
+$("cancel").onclick = $("leave").onclick = () => {
+  if (viewerSession) closeSession(viewerSession, "連線已結束。");
+};
+$("stop").onclick = () => {
+  if (hostSession) closeSession(hostSession, "已停止接受連線。");
+};
 window.addEventListener("pagehide", () => {
-  if (active) closeSession(active, "連線已結束。");
+  if (viewerSession) closeSession(viewerSession, "連線已結束。");
+  if (hostSession) closeSession(hostSession, "連線已結束。");
 });
 
 const ime = $("ime"),
   anchor = "\u200b";
 let composing = false;
 function keyboard(on) {
-  if (on && active?.sendInput) {
+  if (on && viewerSession?.sendInput) {
     ime.hidden = false;
     ime.value = anchor;
     ime.focus({ preventScroll: true });
@@ -1300,7 +1549,7 @@ function keyboard(on) {
 }
 function special(code) {
   for (const down of [true, false])
-    active?.sendInput?.({ kind: "key", code, down });
+    viewerSession?.sendInput?.({ kind: "key", code, down });
 }
 function commitIME() {
   if (composing || ime.hidden) return;
@@ -1309,7 +1558,7 @@ function commitIME() {
   else if (text) {
     const letters = Array.from(text.replace(/[\x00-\x1f]/g, ""));
     while (letters.length)
-      active?.sendInput?.({
+      viewerSession?.sendInput?.({
         kind: "text",
         text: letters.splice(0, 120).join(""),
       });
@@ -1367,7 +1616,7 @@ if (window.PhoneUpdates) {
     const check = $("check-update"),
       install = $("install-update"),
       status = $("update-status");
-    if (action === "install" && active && (!active.host || active.peers.size)) {
+    if (action === "install" && (viewerSession || hostSession?.peers.size)) {
       status.textContent = "請先結束遠端連線，再安裝更新。";
       return;
     }

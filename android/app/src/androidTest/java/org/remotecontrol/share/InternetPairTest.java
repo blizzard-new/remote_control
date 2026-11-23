@@ -24,13 +24,13 @@ import org.junit.Test;
 public class InternetPairTest {
   private static final java.nio.charset.Charset UTF8 = StandardCharsets.UTF_8;
 
-  private static byte[] mac(byte[] key, byte[] data) throws Exception {
+  static byte[] mac(byte[] key, byte[] data) throws Exception {
     Mac h = Mac.getInstance("HmacSHA256");
     h.init(new SecretKeySpec(key, "HmacSHA256"));
     return h.doFinal(data);
   }
 
-  private static byte[] crypt(int mode, byte[] key, int n, byte[] message) throws Exception {
+  static byte[] crypt(int mode, byte[] key, int n, byte[] message) throws Exception {
     Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
     c.init(
         mode,

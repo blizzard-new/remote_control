@@ -34,6 +34,7 @@ public final class ShareHostActivity extends Activity {
     private PhoneShare preview;
     private String previewError;
     private int previousViewers = -1;
+    private boolean leaveCodePage;
     private Button enable;
     private AppUpdates updates;
 
@@ -204,7 +205,10 @@ public final class ShareHostActivity extends Activity {
             relay.setVisibility(internetMode.isChecked() && !status.running ? View.VISIBLE : View.GONE);
             highQuality.setEnabled(!internetMode.isChecked() && !prompting && !status.running);
             int count = host == null ? 0 : host.viewers();
-            if (previousViewers == 0 && count > 0 && status.running && hasWindowFocus()) moveTaskToBack(true);
+            if (count == 0) leaveCodePage = false;
+            else if (previousViewers == 0) leaveCodePage = true;
+            if (leaveCodePage && status.running && hasWindowFocus() && moveTaskToBack(true))
+                leaveCodePage = false;
             previousViewers = count;
             copyInvite.setVisibility(host!=null && !host.invitation().isEmpty() ? View.VISIBLE : View.GONE);
             java.util.Map<String,String> requests=host==null ? java.util.Collections.emptyMap() : host.pending();

@@ -4,7 +4,6 @@ import ctypes
 from io import BytesIO
 from pathlib import Path
 import platform
-import struct
 import subprocess
 import sys
 import tempfile
@@ -14,9 +13,8 @@ from PIL import Image, ImageGrab
 
 class PrimaryScreen:
     def __init__(self):
-        self.helper = None
         self.lock = asyncio.Lock()
-        self.mac_access = False
+        self.mac_prompted = False
 
     def _snapshot(self):
         if sys.platform == "darwin":
@@ -45,39 +43,28 @@ class PrimaryScreen:
         cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         cg.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
         cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
-        self.mac_access = bool(cg.CGPreflightScreenCaptureAccess() or cg.CGRequestScreenCaptureAccess())
-        if not self.mac_access:
-            raise RuntimeError("請在 Mac 的「系統設定 → 隱私權與安全性 → 螢幕與系統音訊錄製」（舊版為「螢幕錄製」）允許 RemoteControl，再依系統提示重新開啟程式。")
+        if cg.CGPreflightScreenCaptureAccess():
+            return
+        if not self.mac_prompted:
+            self.mac_prompted = True
+            if cg.CGRequestScreenCaptureAccess():
+                return
+        raise PermissionError("macOS 尚未允許這個程序擷取螢幕。若系統已允許 RemoteControl，請重新開啟程式。")
+
+    def _frame(self):
+        if sys.platform == "darwin":
+            from .macos import capture_jpeg, display_bridge
+            if int(platform.mac_ver()[0].split(".")[0]) >= 14:
+                bridge = display_bridge()
+                if bridge is not None:
+                    return capture_jpeg(bridge)
+            self._mac_permission()
+        return self._snapshot()
 
     async def frame(self):
         async with self.lock:
-            if sys.platform == "darwin" and not self.mac_access:
-                await asyncio.to_thread(self._mac_permission)
-            helper = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "PrimaryDisplay"
-            if sys.platform != "darwin" or not helper.is_file() or int(platform.mac_ver()[0].split(".")[0]) < 14:
-                return await asyncio.to_thread(self._snapshot)
-            if self.helper is None:
-                self.helper = await asyncio.create_subprocess_exec(str(helper), stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            proc = self.helper
-            try:
-                proc.stdin.write(b"F")
-                await proc.stdin.drain()
-                length, = struct.unpack(">I", await asyncio.wait_for(proc.stdout.readexactly(4), 10))
-                if not 0 < length <= 16 * 1024 * 1024:
-                    raise ValueError("Invalid frame length")
-                return await asyncio.wait_for(proc.stdout.readexactly(length), 5)
-            except (OSError, EOFError, TimeoutError, ValueError) as exc:
-                raise RuntimeError("Mac 無法擷取主螢幕。請喚醒 Mac，確認螢幕錄製已允許 RemoteControl，再重新連線。") from exc
+            return await asyncio.to_thread(self._frame)
 
     async def stop(self):
-        async with self.lock:
-            self.mac_access = False
-            proc, self.helper = self.helper, None
-            if proc is not None:
-                proc.stdin.close()
-                try:
-                    await asyncio.wait_for(proc.wait(), 1)
-                except TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+        # Each screenshot has a bounded lifetime and runs only on demand.
+        pass

@@ -82,8 +82,7 @@ def start_online(port, *, on_ready):
             if port is not None or not unavailable:
                 raise
             listener.bind(("127.0.0.1", 0))
-        options = ["--request-control"] if sys.platform == "darwin" else []
-        run_server(options, online_socket=listener, on_ready=on_ready)
+        run_server([], online_socket=listener, on_ready=on_ready)
 
 
 def main():

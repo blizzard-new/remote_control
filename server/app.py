@@ -161,7 +161,8 @@ class Room:
                 await host.send_bytes(data)
         except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
             if host is self.host:
-                await send(host, "capture-error", message=str(exc) or "無法擷取主螢幕，請確認系統權限。")
+                await send(host, "capture-error", message=str(exc) or "無法擷取主螢幕。",
+                           reason="permission" if isinstance(exc, PermissionError) else "unavailable")
 
     async def stop_capture(self):
         if self.frame_task is not None:
@@ -338,7 +339,7 @@ async def headers(request, handler):
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                                       f"img-src 'self' data:; media-src 'self' blob:; connect-src {connections}; "
+                                       f"img-src 'self' data: blob:; media-src 'self' blob:; connect-src {connections}; "
                                        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         })
     return response
@@ -347,12 +348,51 @@ async def headers(request, handler):
 def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_store=None, primary_capture=None, updater=None):
     room = Room(token, desktop, ice_servers or [], primary_capture)
     app = web.Application(middlewares=[headers])
+
+    def require_local_host(request):
+        if (not is_loopback(request.remote) or request.headers.get("Origin") != f"{request.scheme}://{request.host}"
+                or not matches(request.headers.get("X-Host-Token"), token)):
+            raise web.HTTPForbidden()
+
+    if primary_capture is not None and platform.system() == "Darwin":
+        from native.macos import running_app
+        relaunching = False
+
+        def quit_after_response():
+            raise web.GracefulExit()
+
+        async def mac_permissions(request):
+            nonlocal relaunching
+            require_local_host(request)
+            data = await request.json()
+            action = data.get("action") if isinstance(data, dict) else None
+            if action not in ("check", "request", "relaunch"):
+                raise web.HTTPBadRequest()
+            try:
+                if action == "relaunch":
+                    bundle = running_app()
+                    if not bundle:
+                        raise ValueError("請從原本的終端機重新啟動程式。")
+                    if not relaunching:
+                        relaunching = True
+                        try:
+                            await asyncio.to_thread(subprocess.run, ["/usr/bin/open", "-n", str(bundle)], check=True, timeout=10)
+                        except (OSError, subprocess.SubprocessError):
+                            relaunching = False
+                            raise
+                        asyncio.get_running_loop().call_later(1, quit_after_response)
+                    return web.json_response({"relaunching": True})
+                if action == "request":
+                    await asyncio.to_thread(desktop.request_control)
+                return web.json_response(desktop.mac_permissions())
+            except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+
+        app.router.add_post("/api/mac-permissions", mac_permissions)
     if device_store is not None:
         from .pairings import update
         async def paired_devices(request):
-            if (not is_loopback(request.remote) or request.headers.get("Origin") != f"{request.scheme}://{request.host}"
-                    or not matches(request.headers.get("X-Host-Token"), token)):
-                raise web.HTTPForbidden()
+            require_local_host(request)
             try:
                 data = await request.json()
                 if not isinstance(data, dict):
@@ -366,9 +406,7 @@ def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_stor
         app.router.add_post("/api/paired", paired_devices)
     if updater is not None:
         async def software_update(request):
-            if (not is_loopback(request.remote) or request.headers.get("Origin") != f"{request.scheme}://{request.host}"
-                    or not matches(request.headers.get("X-Host-Token"), token)):
-                raise web.HTTPForbidden()
+            require_local_host(request)
             try:
                 payload = await request.json()
                 action = payload.get("action") if isinstance(payload, dict) else None

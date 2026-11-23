@@ -1,14 +1,24 @@
 """Quartz input for one macOS display. All positions use global display points."""
 
 import ctypes as ct
+from functools import lru_cache
 from pathlib import Path
-import subprocess
 import sys
 from math import trunc
 from time import monotonic
 
 
-ACCESS_HINT = "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」開啟 RemoteControl。主機會自動重新檢查操作權限。從原始碼啟動時請允許對應的終端機或 Python。"
+ACCESS_HINT = "macOS 尚未讓這個 RemoteControl 程序傳送鍵鼠事件。若「輔助使用」已開，請在進階設定核對執行路徑並重新開啟程式。"
+RELAUNCH_HINT = "macOS 已認可這個程序的輔助使用權限，但尚未開放傳送鍵鼠事件。請在進階設定重新開啟 RemoteControl 後再連線。"
+
+
+def running_app():
+    executable = Path(sys.executable).resolve()
+    if getattr(sys, "frozen", False) and executable.parent.name == "MacOS":
+        bundle = executable.parent.parent.parent
+        if bundle.suffix == ".app" and bundle.is_dir():
+            return bundle
+    return None
 
 # Physical DOM positions mapped to the virtual key codes in Carbon Events.h.
 # The current Mac input source determines the resulting characters.
@@ -65,13 +75,42 @@ def _bind(lib, name, result, *arguments):
     return function
 
 
+@lru_cache(maxsize=1)
+def display_bridge():
+    path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1] / "build")) / "libRemoteControlDisplay.dylib"
+    if not path.is_file() and not getattr(sys, "frozen", False):
+        return None
+    library = ct.CDLL(str(path))
+    _bind(library, "rc_capture_jpeg", ct.c_int32, ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
+    _bind(library, "rc_free_image", None, ct.c_void_p)
+    _bind(library, "rc_focused_editable", ct.c_int32)
+    return library
+
+
+def capture_jpeg(library):
+    data, length = ct.c_void_p(), ct.c_ssize_t()
+    status = library.rc_capture_jpeg(ct.byref(data), ct.byref(length))
+    try:
+        if status == 1:
+            raise PermissionError("macOS 拒絕這個 RemoteControl 程序錄製螢幕。若系統開關已開，請從進階設定重新開啟程式。")
+        if status or not data.value or not 0 < length.value <= 16 * 1024 * 1024:
+            raise RuntimeError("Mac 暫時無法取得主螢幕影像。請確認螢幕已喚醒，再重新連線。")
+        return ct.string_at(data, length.value)
+    finally:
+        if data.value:
+            library.rc_free_image(data)
+
+
 class Quartz:
     def __init__(self):
         cg = ct.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         cf = ct.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        ax = ct.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
         ref, uint, sint = ct.c_void_p, ct.c_uint32, ct.c_int32
         self._release = _bind(cf, "CFRelease", None, ref)
         self.has_access = _bind(cg, "CGPreflightPostEventAccess", ct.c_bool)
+        self.accessibility_trusted = _bind(ax, "AXIsProcessTrusted", ct.c_bool)
+        self.screen_allowed = _bind(cg, "CGPreflightScreenCaptureAccess", ct.c_bool)
         self.request_access = _bind(cg, "CGRequestPostEventAccess", ct.c_bool)
         self._displays = _bind(cg, "CGGetActiveDisplayList", sint, uint, ct.POINTER(uint), ct.POINTER(uint))
         self._main = _bind(cg, "CGMainDisplayID", uint)
@@ -156,15 +195,28 @@ class MacBackend:
         self._buttons = {}
         self._clicks = {}
         self._wheel_pixels = [0.0, 0.0]
+        self._requested = False
+
+    def permissions(self):
+        app = running_app()
+        return {"application": str(app or Path(sys.executable).resolve()), "relaunch": bool(app),
+                "accessibility": bool(self.quartz.accessibility_trusted()),
+                "postEvents": bool(self.quartz.has_access()), "screen": bool(self.quartz.screen_allowed())}
 
     def request_control(self):
-        if self.quartz.has_access() or self.quartz.request_access():
+        if self.quartz.has_access():
             return "Mac 已允許此主機傳送鍵鼠輸入。"
+        if self.quartz.accessibility_trusted():
+            return RELAUNCH_HINT
+        if not self._requested:
+            self._requested = True
+            if self.quartz.request_access():
+                return "Mac 已允許此主機傳送鍵鼠輸入。"
         return ACCESS_HINT
 
     def geometry(self):
         if not self.quartz.has_access():
-            raise RuntimeError(ACCESS_HINT)
+            raise PermissionError(RELAUNCH_HINT if self.quartz.accessibility_trusted() else ACCESS_HINT)
         self._display = self.quartz.bounds(primary=True) if self.primary_only else self.quartz.bounds()
         return self._display[2:]
 
@@ -205,12 +257,8 @@ class MacBackend:
             del self._buttons[button]
 
     def editable_focus(self):
-        path = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1] / "build")) / "PrimaryDisplay"
-        if not path.is_file(): return False
-        try:
-            return subprocess.run([str(path),"--editable"],capture_output=True,timeout=1.5).stdout.strip() == b"1"
-        except (OSError,subprocess.TimeoutExpired):
-            return False
+        bridge = display_bridge()
+        return bool(bridge and bridge.rc_focused_editable())
 
     def apply(self, event):
         kind = event["kind"]

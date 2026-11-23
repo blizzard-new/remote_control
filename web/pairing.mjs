@@ -268,8 +268,7 @@ export class HostChannels {
   }
   async start(contacts) {
     for (const contact of contacts.filter((p) => p.address === this.address)) {
-      this.saved.set(contact.listen, { pair: contact, failures: 0 });
-      this.listen(contact, true).catch(() => this.retry(contact.listen));
+      this.remember(contact);
     }
     let failures = 0;
     const retryPin = () => {
@@ -359,12 +358,16 @@ export class HostChannels {
     });
   }
   remember(pair) {
+    if (this.closed) return;
     const entry = this.channels.get(pair.listen);
     if (entry) {
       if (!this.saved.has(pair.listen))
         this.saved.set(pair.listen, { pair, failures: 0 });
       entry.saved = true;
       clearTimeout(entry.timer);
+    } else if (!this.saved.has(pair.listen) && pair.address === this.address) {
+      this.saved.set(pair.listen, { pair, failures: 0 });
+      this.listen(pair, true).catch(() => this.retry(pair.listen));
     }
   }
   forget(key) {

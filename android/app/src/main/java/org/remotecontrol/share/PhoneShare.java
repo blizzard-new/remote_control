@@ -191,7 +191,7 @@ final class PhoneShare implements AutoCloseable {
     if (pin.isEmpty()) return reconnecting ? "配對服務暫時連不上，正在重試。請確認手機網路與配對服務網址。" : "正在取得手機的四位數連線碼…";
     reconnecting = false;
     return "手機連線碼　" + pin + (sharing
-        ? "\n\n螢幕分享中。已配對的電腦可直接點選手機名稱。\n已連線：" + viewers() + saveError
+        ? "\n\n螢幕分享中。連線後請切回主畫面或開啟要分享的 App。連線碼頁受系統保護。\n已連線：" + viewers() + saveError
         : "\n\n在電腦輸入這四碼。準備好後，按「開放整個螢幕連線」。");
   }
 
@@ -204,7 +204,8 @@ final class PhoneShare implements AutoCloseable {
             c.saved
                 ? c.pair.optString("name") + "（已配對）"
                 : request.getValue() + " · 核對 " + c.pair.optString("check");
-        out.put(item.getKey() + "." + request.getKey(), label);
+        String mode = c.host.requestedControl(request.getKey()) ? " · 要求操作" : " · 要求觀看";
+        out.put(item.getKey() + "." + request.getKey(), label + mode);
       }
     }
     return out;

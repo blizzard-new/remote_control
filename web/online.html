@@ -32,7 +32,7 @@
         </nav>
         <div class="rail-bottom">
           <i data-i="shield-check"></i
-          ><span>Uniway Remote<small>版本 0.5.3</small></span>
+          ><span>Uniway Remote<small>版本 0.5.4</small></span>
         </div>
       </aside>
       <header class="top">
@@ -150,6 +150,14 @@
             ><input id="relay" type="url" spellcheck="false" />
           </details>
           <a id="lan" hidden>區網 WebRTC、音訊及隱私模式</a>
+          <section id="mac-permissions" hidden>
+            <h2>這個 Mac 的被控權限</h2>
+            <p id="mac-app-path"></p>
+            <p id="mac-access" role="status"></p>
+            <button id="mac-check">重新讀取權限</button>
+            <button id="mac-request" hidden>要求 macOS 允許鍵鼠操作</button>
+            <button id="mac-relaunch" hidden>重新開啟 RemoteControl</button>
+          </section>
           <section id="updates" hidden>
             <h2>軟體更新</h2>
             <p id="update-status" role="status"></p>
@@ -167,8 +175,22 @@
         </div>
       </main>
     </div>
+    <section id="joining" aria-labelledby="joining-title" hidden>
+      <div>
+        <h1 id="joining-title">正在連接對方裝置</h1>
+        <p id="joining-note" role="status"></p>
+        <button id="join-watch" hidden>先觀看畫面</button>
+        <button id="cancel">取消連線</button>
+      </div>
+    </section>
     <section id="stage" hidden>
       <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
+      <p id="first-picture" role="status" hidden></p>
+      <div id="share-request" hidden>
+        <p id="share-requester"></p>
+        <button id="switch-share">切換為分享手機</button>
+        <button id="skip-share">稍後</button>
+      </div>
       <textarea
         id="ime"
         aria-label="遠端文字輸入"
@@ -205,6 +227,8 @@
         <button id="leave" hidden><i data-i="box-arrow-right"></i>離開</button>
       </div>
     </section>
-    <button id="cancel" hidden>取消連線</button>
+    <aside id="incoming-requests" aria-label="連入這台裝置的請求" hidden>
+      <strong>連入這台裝置的請求</strong>
+    </aside>
   </body>
 </html>

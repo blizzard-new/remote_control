@@ -52,11 +52,14 @@ class Desktop:
     @property
     def capabilities(self):
         hint = getattr(self, "_failure", "")
+        reason = "unavailable"
         try:
             width, height = self._backend.geometry() if self._backend else (0, 0)
         except (RuntimeError, OSError) as exc:
             width, height = 0, 0
             hint = str(exc)
+            if isinstance(exc, PermissionError):
+                reason = "access"
         result = {
             "control": width > 0 and height > 0,
             "keyboard": hasattr(self._backend,"editable_focus"),
@@ -66,7 +69,13 @@ class Desktop:
         }
         if hint and not result["control"]:
             result["controlHint"] = hint
+            result["controlReason"] = reason
         return result
+
+    def mac_permissions(self):
+        if not hasattr(self._backend, "permissions"):
+            raise RuntimeError(self._failure or "無法載入 Mac 的鍵鼠輸入服務。")
+        return self._backend.permissions()
 
     def editable_focus(self):
         probe = getattr(self._backend, "editable_focus", None)

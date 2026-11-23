@@ -504,13 +504,62 @@ summary {
   border: 0;
   opacity: 0.02;
 }
-#cancel {
+#joining {
   position: fixed;
-  bottom: 14px;
-  right: 15px;
+  inset: 0;
+  z-index: 11;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f0f6fc;
 }
-#cancel:has(~ *) {
-  z-index: 1;
+#joining > div {
+  width: min(100%, 32rem);
+  padding: 24px;
+  border-radius: 12px;
+  background: white;
+}
+#joining-note {
+  line-height: 1.6;
+}
+#first-picture,
+#share-request {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(90%, 30rem);
+  text-align: center;
+  padding: 16px;
+  border-radius: 10px;
+  color: white;
+  background: #263953;
+}
+#first-picture {
+  pointer-events: none;
+}
+#connected-list button {
+  margin: 4px 8px;
+}
+#incoming-requests {
+  position: fixed;
+  z-index: 14;
+  bottom: 1rem;
+  left: 1rem;
+  width: min(90%, 26rem);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 1rem;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+#incoming-requests small,
+#incoming-requests .device strong {
+  display: block;
+  margin: 6px 0;
+}
+#mac-app-path {
+  overflow-wrap: anywhere;
 }
 @media (max-width: 760px) {
   .shell {

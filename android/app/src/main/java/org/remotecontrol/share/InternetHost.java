@@ -146,7 +146,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     p.reason = reason;
     try {
       send(p, 1, new JSONObject().put("t","control-pending").put("reason",reason)
-          .put("platform","Android").toString().getBytes(StandardCharsets.UTF_8));
+          .put("platform","Android").put("canView",true).toString().getBytes(StandardCharsets.UTF_8));
     } catch (Exception e) { drop(p.id); }
   }
   synchronized void decide(int id, boolean allow) {
@@ -328,6 +328,10 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
           send(p, 1, new JSONObject().put("t","resume").put("proof",proof)
               .toString().getBytes(StandardCharsets.UTF_8));
         } else checkRequest(p);
+      } else if ("view-only".equals(m.optString("t")) && p.name != null && !p.approved && !p.redirected) {
+        p.viewOnly = true;
+        p.awaitControl = false;
+        checkRequest(p);
       } else if (p.approved && "quality".equals(m.optString("t"))) {
         p.profile(m);
       } else if (p.approved && p.control && "input".equals(m.optString("t"))) {
