@@ -1,3 +1,4 @@
+import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, imagePiece } from "./video.mjs";
 // The invitation stays on the two devices. Only its hash identifies a relay room.
 // Each direction has a separate AES-GCM key and an ordered packet counter.
 const utf8 = new TextEncoder();
@@ -220,6 +221,55 @@ export class Relay {
       .catch(() => this.drop(id))
       .finally(() => peer.pending--);
     return peer.queue;
+  }
+  async sendImage(id, image, parts) {
+    const peer = this.peers.get(id);
+    if (
+      !peer ||
+      this.closed ||
+      peer.sendingImage ||
+      image.length > (parts ? MAX_IMAGE : SINGLE_IMAGE)
+    )
+      return;
+    peer.sendingImage = true;
+    try {
+      const fragmented = image.length > SINGLE_IMAGE;
+      for (
+        let offset = 0;
+        offset < image.length;
+        offset += fragmented ? PIECE_BYTES : image.length
+      ) {
+        const size = fragmented
+          ? Math.min(PIECE_BYTES, image.length - offset)
+          : image.length;
+        const now = performance.now(),
+          due = Math.max(now, this.mediaDue || 0);
+        // All viewers on this socket share a byte budget. Keep input and consent messages unpaced.
+        this.mediaDue = due + (size + 64) / 3200;
+        if (due > now) await new Promise((done) => setTimeout(done, due - now));
+        while (
+          !this.closed &&
+          this.peers.get(id) === peer &&
+          this.ws.readyState === 1 &&
+          this.ws.bufferedAmount > PIECE_BYTES
+        ) {
+          await new Promise((done) => setTimeout(done, 40));
+        }
+        if (
+          this.closed ||
+          this.peers.get(id) !== peer ||
+          this.ws.readyState !== 1
+        )
+          return;
+        await this.send(
+          id,
+          fragmented ? 4 : 2,
+          fragmented ? imagePiece(image, offset) : image,
+        );
+      }
+    } finally {
+      peer.sendingImage = false;
+    }
   }
   json(id, value) {
     return this.send(id, 1, utf8.encode(JSON.stringify(value)));

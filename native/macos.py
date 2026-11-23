@@ -81,15 +81,16 @@ def display_bridge():
     if not path.is_file() and not getattr(sys, "frozen", False):
         return None
     library = ct.CDLL(str(path))
-    _bind(library, "rc_capture_jpeg", ct.c_int32, ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
+    _bind(library, "rc_capture_jpeg_for_profile", ct.c_int32, ct.c_int32, ct.c_int32,
+          ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
     _bind(library, "rc_free_image", None, ct.c_void_p)
     _bind(library, "rc_focused_editable", ct.c_int32)
     return library
 
 
-def capture_jpeg(library):
+def capture_jpeg(library, edge=1920, sharp=False):
     data, length = ct.c_void_p(), ct.c_ssize_t()
-    status = library.rc_capture_jpeg(ct.byref(data), ct.byref(length))
+    status = library.rc_capture_jpeg_for_profile(edge, int(sharp), ct.byref(data), ct.byref(length))
     try:
         if status == 1:
             raise PermissionError("macOS 拒絕這個 RemoteControl 程序錄製螢幕。若系統開關已開，請從進階設定重新開啟程式。")

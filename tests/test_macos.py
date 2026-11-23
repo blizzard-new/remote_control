@@ -37,7 +37,7 @@ class MacInputTests(unittest.TestCase):
         library = Mock()
         for status, error in [(1, PermissionError), (2, RuntimeError), (0, RuntimeError)]:
             with self.subTest(status=status):
-                library.rc_capture_jpeg.return_value = status
+                library.rc_capture_jpeg_for_profile.return_value = status
                 with self.assertRaises(error):
                     capture_jpeg(library)
         library.rc_free_image.assert_not_called()

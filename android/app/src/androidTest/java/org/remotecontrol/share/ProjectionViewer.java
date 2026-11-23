@@ -23,7 +23,21 @@ final class ProjectionViewer extends WebSocketListener {
   private final byte[] seed;
   private final String room;
   private byte[] receiveKey;
-  private int sequence;
+  private int sequence, outgoing;
+  private byte[] sendKey, partial;
+  private int received;
+  private WebSocket session;
+  volatile boolean receivedParts;
+  synchronized void quality(int edge, int fps) throws Exception {
+    send(new JSONObject().put("t", "quality").put("edge", edge).put("fps", fps).put("sharp", true).put("avc", false));
+  }
+
+  private void send(JSONObject message) throws Exception {
+    byte[] body = InternetPairTest.crypt(Cipher.ENCRYPT_MODE, sendKey, outgoing++,
+        ("\001" + message).getBytes(StandardCharsets.UTF_8));
+    if (!session.send(ByteString.of(ByteBuffer.allocate(4 + body.length).putInt(7).put(body).array())))
+      throw new AssertionError("Test peer disconnected");
+  }
 
   ProjectionViewer(byte[] seed) throws Exception {
     this.seed = seed;
@@ -47,7 +61,8 @@ final class ProjectionViewer extends WebSocketListener {
         for (int i = 0; i < 16; i++)
           salt[i] = (byte) Integer.parseInt(nonce.substring(2 * i, 2 * i + 2), 16);
         byte[] root = InternetPairTest.mac(salt, seed);
-        byte[] tx =
+        session = ws;
+        sendKey =
             InternetPairTest.mac(
                 root, "remote-control/v1/view\001".getBytes(StandardCharsets.UTF_8));
         receiveKey =
@@ -58,12 +73,9 @@ final class ProjectionViewer extends WebSocketListener {
                 .put("t", "request")
                 .put("name", "Mac")
                 .put("platform", "Darwin")
-                .put("viewOnly", true)
-                .put("avc", false);
-        byte[] body =
-            InternetPairTest.crypt(
-                Cipher.ENCRYPT_MODE, tx, 0, ("\001" + request).getBytes(StandardCharsets.UTF_8));
-        ws.send(ByteString.of(ByteBuffer.allocate(4 + body.length).putInt(7).put(body).array()));
+                .put("viewOnly", true).put("frameParts", true).put("edge", 960)
+                .put("fps", 30).put("sharp", true).put("avc", false);
+        send(request);
       }
     } catch (Exception e) {
       throw new AssertionError(e);
@@ -82,13 +94,29 @@ final class ProjectionViewer extends WebSocketListener {
               Arrays.copyOfRange(wire, 4, wire.length));
       if (plain[0] == 1)
         notices.add(new JSONObject(new String(plain, 1, plain.length - 1, StandardCharsets.UTF_8)));
-      if (plain[0] == 2) {
-        if (images.remainingCapacity() == 0) images.poll();
-        images.offer(Arrays.copyOfRange(plain, 1, plain.length));
+      if (plain[0] == 2) image(Arrays.copyOfRange(plain, 1, plain.length));
+      if (plain[0] == 4) {
+        ByteBuffer piece = ByteBuffer.wrap(plain);
+        piece.get();
+        int total = piece.getInt(), offset = piece.getInt();
+        if (offset == 0) {
+          if (total <= 340000 || total > 8 * 1024 * 1024) throw new AssertionError("Frame size");
+          partial = new byte[total]; received = 0;
+        }
+        if (partial == null || partial.length != total || offset != received) throw new AssertionError("Fragment order");
+        int size = piece.remaining();
+        piece.get(partial, offset, size);
+        received += size;
+        if (received == total) { receivedParts = true; image(partial); partial = null; }
       }
     } catch (Exception e) {
       throw new AssertionError(e);
     }
+  }
+
+  private void image(byte[] jpeg) {
+    if (images.remainingCapacity() == 0) images.poll();
+    images.offer(jpeg);
   }
 
   @Override

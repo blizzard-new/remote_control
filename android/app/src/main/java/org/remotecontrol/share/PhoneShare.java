@@ -278,25 +278,32 @@ final class PhoneShare implements AutoCloseable {
     return value;
   }
 
-  synchronized void publish(android.graphics.Bitmap source, java.io.ByteArrayOutputStream buffer) {
+  synchronized void publish(android.graphics.Bitmap source, java.io.ByteArrayOutputStream buffer, android.os.Handler worker) {
     if (closed) return;
-    for (int edge : new int[]{960,1280,1920}) {
-      boolean wanted = false;
-      for (Channel c : channels.values()) if (c.host.wants(edge)) { wanted = true; break; }
-      if (!wanted) continue;
-      double scale = Math.min(1d, edge / (double)Math.max(source.getWidth(),source.getHeight()));
-      android.graphics.Bitmap image = scale == 1 ? source : android.graphics.Bitmap.createScaledBitmap(source,
-          Math.max(1,(int)Math.round(source.getWidth()*scale)), Math.max(1,(int)Math.round(source.getHeight()*scale)), true);
+    for (int edge : VideoQuality.EDGES) {
+      android.graphics.Bitmap image = null;
       try {
-        for (int quality : new int[]{88,72,54,36}) {
-          buffer.reset();
-          if (!image.compress(android.graphics.Bitmap.CompressFormat.JPEG,quality,buffer)) break;
-          if (buffer.size() > 340000) continue;
-          byte[] data = buffer.toByteArray();
-          for (Channel c : channels.values()) c.host.publish(data,edge);
-          break;
+        for (VideoQuality quality : VideoQuality.values()) {
+          boolean wanted = false;
+          for (Channel c : channels.values()) if (c.host.wants(edge, quality)) { wanted = true; break; }
+          if (!wanted) continue;
+          if (image == null) {
+            double scale = Math.min(1d, edge / (double)Math.max(source.getWidth(),source.getHeight()));
+            image = scale == 1 ? source : android.graphics.Bitmap.createScaledBitmap(source,
+                Math.max(1,(int)Math.round(source.getWidth()*scale)), Math.max(1,(int)Math.round(source.getHeight()*scale)), true);
+          }
+          for (int level : quality.levels) {
+            buffer.reset();
+            if (!image.compress(android.graphics.Bitmap.CompressFormat.JPEG, level, buffer)) break;
+            if (buffer.size() > quality.maxBytes) continue;
+            byte[] data = buffer.toByteArray();
+            for (Channel c : channels.values()) c.host.publish(data, edge, quality, worker);
+            break;
+          }
         }
-      } finally { if (image != source) image.recycle(); }
+      } finally {
+        if (image != null && image != source) image.recycle();
+      }
     }
   }
 

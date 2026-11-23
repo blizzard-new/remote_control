@@ -228,9 +228,9 @@ public final class ShareHostActivity extends Activity {
                             "要操作手機，請先開啟「遠端桌面觸控操作」，並選擇分享整個螢幕。");
                         pending.addView(help);
                     }
-                    if(canControl && host.requestedControl(id)) {
+                    if(host.requestedControl(id)) {
                         Button control=new Button(ShareHostActivity.this);control.setText("允許操作");
-                        control.setOnClickListener(v -> { host.decide(id,true,true); moveTaskToBack(true); });pending.addView(control);
+                        control.setOnClickListener(v -> { host.decide(id,true,true); if (canControl) moveTaskToBack(true); });pending.addView(control);
                     }
                     for(boolean allow:new boolean[]{true,false}) {
                         Button decision=new Button(ShareHostActivity.this);decision.setText(allow?"允許觀看":"拒絕");

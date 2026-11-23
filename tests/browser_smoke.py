@@ -206,7 +206,7 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 with BytesIO() as out:
                     Image.new("RGB", (320,180), (16,200,80)).save(out, format="JPEG")
                     self.jpeg = out.getvalue()
-            async def frame(self):
+            async def frame(self, *, edge, sharp):
                 self.frames += 1
                 if getattr(self, "denied", False):
                     raise RuntimeError("請允許螢幕錄製。")

@@ -152,11 +152,11 @@ class Room:
                 reason = str(exc)
         await send(host, "privacy", enabled=self.privacy, **({"error": reason} if reason else {}))
 
-    async def capture_frame(self, host, fps):
+    async def capture_frame(self, host, fps, edge, sharp):
         try:
             await asyncio.sleep(max(0, self.last_capture + 1/fps - monotonic()))
             self.last_capture = monotonic()
-            data = await self.primary_capture.frame()
+            data = await self.primary_capture.frame(edge=edge, sharp=sharp)
             if host is self.host and any(p.approved for p in self.peers.values()):
                 await host.send_bytes(data)
         except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
@@ -189,7 +189,11 @@ class Room:
         if kind == "primary-frame":
             if self.primary_capture and any(p.approved for p in self.peers.values()):
                 if self.frame_task is None or self.frame_task.done():
-                    self.frame_task = asyncio.create_task(self.capture_frame(host, 60 if message.get("fps") == 60 else 30))
+                    edge = message.get("edge")
+                    if edge not in (960, 1280, 1920, 2560, 3840):
+                        edge = 1920
+                    fps = 60 if message.get("fps") == 60 else 30
+                    self.frame_task = asyncio.create_task(self.capture_frame(host, fps, int(edge), message.get("sharp") is True))
             return
         if kind == "privacy":
             return await self.privacy_request(message)

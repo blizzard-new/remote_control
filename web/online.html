@@ -32,7 +32,7 @@
         </nav>
         <div class="rail-bottom">
           <i data-i="shield-check"></i
-          ><span>Uniway Remote<small>版本 0.5.4</small></span>
+          ><span>Uniway Remote<small>版本 0.5.5</small></span>
         </div>
       </aside>
       <header class="top">
@@ -202,6 +202,7 @@
       ></textarea>
       <div class="viewer-bar">
         <span id="view-mode" hidden>僅供觀看</span>
+        <button id="ask-control" hidden>要求操作</button>
         <span id="save-warning" role="status" hidden></span>
         <button id="keyboard-button" hidden aria-label="手機鍵盤">
           <i data-i="keyboard"></i>
@@ -212,15 +213,25 @@
             <h2>畫面設定</h2>
             <label for="quality">畫質上限</label
             ><select id="quality">
-              <option value="960">540p · 省流量</option>
-              <option value="1280">720p · 標準</option>
-              <option value="1920" selected>1080p · 高畫質</option>
+              <option value="960">960 px（16:9 約 540p）</option>
+              <option value="1280">1280 px（16:9 約 720p）</option>
+              <option value="1920">1920 px（16:9 約 1080p）</option>
+              <option value="2560">2560 px（16:9 約 1440p）</option>
+              <option value="3840" selected>原始尺寸，上限 3840 px</option>
+            </select>
+            <label for="detail-quality">編碼畫質</label
+            ><select id="detail-quality">
+              <option value="sharp" selected>清晰（文字優先）</option>
+              <option value="balanced">標準（省流量）</option>
             </select>
             <label for="fps">目標幀率</label
             ><select id="fps">
               <option value="30">30 fps</option>
               <option value="60">60 fps</option>
             </select>
+            <p id="quality-compat" hidden>
+              舊版分享端僅支援部分畫質設定。請參考下方實收尺寸。
+            </p>
             <p id="stats">正在接收畫面</p>
           </div>
         </details>

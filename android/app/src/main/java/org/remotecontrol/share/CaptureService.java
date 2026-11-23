@@ -141,11 +141,9 @@ public final class CaptureService extends Service {
             worker.postDelayed(new Runnable() {
                 @Override public void run() {
                     if (destroyed) return;
-                    int wanted = internet.codecProfile();
-                    if (wanted != codecProfile && (wanted == 0 || wanted != failedProfile) && rawWidth > 0)
-                        changeSize(rawWidth,rawHeight);
+                    if (rawWidth > 0) changeSize(rawWidth, rawHeight);
                     if (encoder == null && captured && internet.viewers() > 0 && SystemClock.uptimeMillis() - lastFrame >= 500)
-                        internet.publish(bitmap, jpeg);
+                        internet.publish(bitmap, jpeg, worker);
                     worker.postDelayed(this, 500);
                 }
             },500);
@@ -275,7 +273,8 @@ public final class CaptureService extends Service {
                 try {
                     encoder=AvcEncoder.open(sourceWidth,sourceHeight,worker,internet::video,
                         error -> worker.post(() -> { if (codecProfile==selected && !destroyed) {failedProfile=selected; changeSize(rawWidth,rawHeight);} }),
-                        wanted/100,wanted%100);
+                        (wanted & ~VideoQuality.SHARP_BIT) / 100, (wanted & ~VideoQuality.SHARP_BIT) % 100,
+                        (wanted & VideoQuality.SHARP_BIT) != 0);
                     int dpi=Math.max(1,Math.round(getResources().getDisplayMetrics().densityDpi * encoder.width/(float)sourceWidth));
                     attachSurface(encoder.width,encoder.height,dpi,encoder.surface);
                     if (reader!=null) {reader.close();reader=null;}
@@ -304,7 +303,8 @@ public final class CaptureService extends Service {
             encodedSourceHeight = sourceHeight;
             return;
         }
-        double scale = Math.min(1, (internet == null ? 1280d : 1920d) / Math.max(sourceWidth, sourceHeight));
+        int edge = internet == null ? 1280 : Math.max(960, internet.edge());
+        double scale = Math.min(1, edge / (double)Math.max(sourceWidth, sourceHeight));
         int w = Math.max(1, (int) Math.round(sourceWidth * scale));
         int h = Math.max(1, (int) Math.round(sourceHeight * scale));
         if (reader != null && reader.getWidth() == w && reader.getHeight() == h) return;
@@ -351,7 +351,7 @@ public final class CaptureService extends Service {
             packed.flip();
             bitmap.copyPixelsFromBuffer(packed);
             captured = true;
-            if (internet != null) { internet.publish(bitmap,jpeg); return; }
+            if (internet != null) { internet.publish(bitmap, jpeg, worker); return; }
             jpeg.reset();
             if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 76, jpeg)) throw new IllegalStateException("JPEG 編碼失敗。");
             server.publish(jpeg.toByteArray());

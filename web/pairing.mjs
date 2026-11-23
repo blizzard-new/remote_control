@@ -379,6 +379,10 @@ export class HostChannels {
     const r = this.routes.get(id);
     return r?.relay.json(r.remote, value);
   }
+  sendImage(id, image, parts) {
+    const r = this.routes.get(id);
+    return r?.relay.sendImage(r.remote, image, parts);
+  }
   send(id, type, data) {
     const r = this.routes.get(id);
     r?.relay.send(r.remote, type, data);

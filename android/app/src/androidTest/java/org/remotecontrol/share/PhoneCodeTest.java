@@ -111,6 +111,9 @@ public class PhoneCodeTest {
         assertTrue(viewer.images.isEmpty());
         ui.findObject(By.text("開放整個螢幕連線")).click();
         UiObject2 consent = ui.wait(Until.findObject(By.res("android", "button1")), 8000);
+        if (consent == null)
+          consent = ui.wait(Until.findObject(By.pkg("com.android.systemui")
+              .text(java.util.regex.Pattern.compile("(?i)(start( now| recording| sharing)?|share screen)"))), 5000);
         assertNotNull("Android projection consent", consent);
         assertEquals("com.android.systemui", consent.getApplicationPackage());
         consent.click();
@@ -128,7 +131,13 @@ public class PhoneCodeTest {
                 .putExtra("colorPattern", true)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
         File fixture = new File(context.getCacheDir(), "verified-phone-screen.jpg");
-        byte[] frame = visiblePhoneFrame(viewer);
+        android.util.DisplayMetrics metrics = CaptureService.screenMetrics(context);
+        int sourceEdge = Math.max(metrics.widthPixels, metrics.heightPixels);
+        visiblePhoneFrame(viewer, Math.min(960, sourceEdge));
+        viewer.quality(3840, 60);
+        byte[] frame = visiblePhoneFrame(viewer, Math.min(3840, sourceEdge));
+        if (sourceEdge >= 1280 && Math.min(metrics.widthPixels, metrics.heightPixels) >= 800)
+          assertTrue("Detailed mobile image traversed multiple encrypted relay packets", viewer.receivedParts);
         try (FileOutputStream file = new FileOutputStream(fixture)) {
           file.write(frame);
         }
@@ -146,7 +155,7 @@ public class PhoneCodeTest {
     }
   }
 
-  private static byte[] visiblePhoneFrame(ProjectionViewer viewer) throws InterruptedException {
+  private static byte[] visiblePhoneFrame(ProjectionViewer viewer, int expectedEdge) throws InterruptedException {
     long deadline = SystemClock.elapsedRealtime() + 18000;
     while (SystemClock.elapsedRealtime() < deadline) {
       byte[] frame = viewer.images.poll(500, TimeUnit.MILLISECONDS);
@@ -154,6 +163,7 @@ public class PhoneCodeTest {
       Bitmap image = BitmapFactory.decodeByteArray(frame, 0, frame.length);
       if (image == null) continue;
       try {
+        if (Math.max(image.getWidth(), image.getHeight()) != expectedEdge) continue;
         int left = image.getPixel(image.getWidth() / 4, image.getHeight() / 2);
         int right = image.getPixel(3 * image.getWidth() / 4, image.getHeight() / 2);
         if (Color.green(left) > 160

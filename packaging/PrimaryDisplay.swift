@@ -12,7 +12,7 @@ private actor PrimaryDisplay {
     var lastDisplay: CGDirectDisplayID?
     var size = CGSize.zero
 
-    func jpeg() async throws -> Data {
+    func jpeg(edge: Int, sharp: Bool) async throws -> Data {
         let id = CGMainDisplayID()
         let bounds = CGDisplayBounds(id).size
         if filter == nil || lastDisplay != id || bounds != size {
@@ -25,9 +25,14 @@ private actor PrimaryDisplay {
         }
         guard let filter = filter else { throw CaptureError.unavailable }
         let config = SCStreamConfiguration()
-        let scale = min(1, 1920 / max(size.width, size.height))
-        config.width = max(1, Int(size.width * scale))
-        config.height = max(1, Int(size.height * scale))
+        // Stream dimensions are pixels. CGDisplayBounds on Retina is in logical points.
+        let pixelsPerPoint = CGFloat(filter.pointPixelScale)
+        let width = filter.contentRect.width * pixelsPerPoint
+        let height = filter.contentRect.height * pixelsPerPoint
+        guard width > 0, height > 0 else { throw CaptureError.unavailable }
+        let scale = min(1, CGFloat(edge) / max(width, height))
+        config.width = max(1, Int((width * scale).rounded()))
+        config.height = max(1, Int((height * scale).rounded()))
         config.showsCursor = false
         let image: CGImage
         do {
@@ -40,7 +45,7 @@ private actor PrimaryDisplay {
         guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw CaptureError.unavailable
         }
-        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: sharp ? 0.95 : 0.80] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw CaptureError.unavailable }
         return data as Data
     }
@@ -58,13 +63,20 @@ private final class CaptureResult: @unchecked Sendable {
 @_cdecl("rc_capture_jpeg")
 public func captureJPEG(_ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
                         _ length: UnsafeMutablePointer<Int>) -> Int32 {
+    return captureProfileJPEG(1920, 0, output, length)
+}
+
+@_cdecl("rc_capture_jpeg_for_profile")
+public func captureProfileJPEG(_ edge: Int32, _ sharp: Int32,
+                               _ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+                               _ length: UnsafeMutablePointer<Int>) -> Int32 {
     output.pointee = nil
     length.pointee = 0
     guard #available(macOS 14.0, *) else { return 2 }
     let result = CaptureResult()
     let task = Task {
         do {
-            result.jpeg = try await PrimaryDisplay.shared.jpeg()
+            result.jpeg = try await PrimaryDisplay.shared.jpeg(edge: min(3840, max(1, Int(edge))), sharp: sharp != 0)
             result.status = 0
         } catch {
             let code = error as NSError

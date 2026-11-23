@@ -1,3 +1,4 @@
+import { EDGES, SINGLE_IMAGE, MAX_IMAGE, ImageAssembly } from "./video.mjs";
 import {
   HostChannels,
   findPin,
@@ -162,6 +163,8 @@ function renderDevices() {
     : platforms.get(platform) + " · 本機裝置";
   $("hostbox").hidden = !!selected || !token || viewerSession;
   $("phone-share").hidden = !window.PhoneDevices || !!selected;
+  $("action-connect").querySelector("span").textContent =
+    selected?.platform === "Android" ? "操作手機" : "遠端控制";
   $("action-view").querySelector("span").textContent =
     selected?.platform === "Android" ? "觀看手機畫面" : "觀看模式";
   $("forget").hidden = !selected;
@@ -202,8 +205,10 @@ $("name").onchange = () => {
   renderDevices();
 };
 for (const button of document.querySelectorAll("nav button"))
-  button.onclick = () =>
+  button.onclick = () => {
+    if (button.dataset.page === "connect") requestViewOnly = false;
     go(button.dataset.page, button.dataset.page !== "devices");
+  };
 $("back-list").onclick = () => go("devices", false);
 $("add").onclick = () => {
   requestViewOnly = false;
@@ -319,11 +324,15 @@ function closeSession(s, message) {
         true;
     $("joinbox").hidden = false;
     $("connect").disabled = false;
-    $("view-mode").hidden = $("share-request").hidden = true;
+    $("ask-control").hidden =
+      $("view-mode").hidden =
+      $("share-request").hidden =
+        true;
     $("stats").textContent = "正在接收畫面";
     $("video-menu").open = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     clearTimeout(s.mediaTimer);
+    clearInterval(s.statsTimer);
     s.detach?.();
   }
   s.abort.abort();
@@ -407,10 +416,10 @@ function renderConnections() {
           c.listen === p.pair?.listen && c.address === hostSession?.address,
       );
       if (pair) {
-        const watch = document.createElement("button");
-        watch.textContent = "觀看手機畫面";
-        watch.onclick = () => joinDevice(pair, true);
-        row.append(watch);
+        const control = document.createElement("button");
+        control.textContent = "操作手機";
+        control.onclick = () => joinDevice(pair);
+        row.append(control);
       }
     }
     return row;
@@ -515,6 +524,7 @@ async function connectRelay(s) {
           t: "request",
           viewOnly: !!s.viewOnly,
           avc: false,
+          frameParts: true,
           screenRequest: !!window.PhoneDevices,
           ...(s.resume?.length ? { resume: s.resume.map((r) => r.offer) } : {}),
           ...profile(),
@@ -547,7 +557,7 @@ async function connectRelay(s) {
           viewerNote(
             s,
             s.askedPhone
-              ? "正在等候手機開放分享。請在手機點「切換為分享手機」，或在裝置列表點「我的手機連線碼」並開放整個螢幕連線。"
+              ? "正在等候手機開放分享。請在手機點邀請上的按鈕，或在裝置列表點「我的手機連線碼」並開放整個螢幕連線。"
               : s.pair.platform === "Android"
                 ? "正在尋找手機。請在手機開啟「我的手機連線碼」並開放整個螢幕連線。"
                 : "正在等候已配對裝置恢復連線…",
@@ -564,7 +574,7 @@ async function connectRelay(s) {
         closeSession(
           s,
           s.pair.platform === "Android"
-            ? "手機尚未開放分享。請在手機點「我的手機連線碼」→「開放整個螢幕連線」，再點觀看手機畫面。"
+            ? "手機尚未開放分享。請在手機點「我的手機連線碼」→「開放整個螢幕連線」，再從裝置列表連線。"
             : "配對服務找不到這台裝置。請喚醒對方，開啟 Uniway Remote 並保持主機分頁顯示「等候連線」，再按遠端控制。若對方已重新安裝，可使用目前顯示的四碼配對。",
         );
         $("pair-again").hidden = false;
@@ -583,7 +593,14 @@ async function connectRelay(s) {
         receiveVideo(s, p, data);
         return;
       }
+      if (type === 4 && !s.host && p.approved) {
+        p.assembly ??= new ImageAssembly();
+        data = p.assembly.accept(data);
+        if (!data) return;
+        type = 2;
+      }
       if (type === 2) {
+        p.assembly?.reset();
         if (!s.host && p.approved && !p.direct && !p.painting) {
           p.painting = true;
           decodeJpeg(data)
@@ -611,7 +628,13 @@ async function connectRelay(s) {
       ) {
         p.screenRequestShown = true;
         $("share-requester").textContent =
-          "「" + p.name + "」想觀看這支手機的畫面。";
+          "「" +
+          p.name +
+          (m.control === true
+            ? "」要求操作這支手機。"
+            : "」想觀看這支手機的畫面。");
+        $("switch-share").textContent =
+          m.control === true ? "開啟手機操作設定" : "切換為分享手機";
         $("share-request").hidden = false;
         return;
       }
@@ -684,6 +707,7 @@ async function connectRelay(s) {
             if (proof) return s.relay.json(id, { t: "resume", proof });
           }
           p.profile = profile(m);
+          p.frameParts = m.frameParts === true;
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
           p.screenRequest =
@@ -753,8 +777,20 @@ async function connectRelay(s) {
         clearTimeout(p.timeout);
         p.approved = true;
         s.wasApproved = true;
-        p.control = m.control === true;
+        p.control = m.control === true && !s.viewOnly;
+        $("quality-compat").hidden = m.qualityControls === true;
         $("view-mode").hidden = p.control;
+        $("ask-control").hidden =
+          p.control || p.platform !== "Android" || !s.pair || !m.remembered;
+        if (!$("ask-control").hidden)
+          $("ask-control").onclick = () => {
+            const saved = contacts.find(
+              (c) => c.listen === s.pair.listen && c.address === s.address,
+            );
+            if (!saved || !current(s)) return;
+            closeSession(s, "");
+            joinDevice(saved, false);
+          };
         $("save-warning").textContent = saveWarning;
         $("save-warning").hidden = !saveWarning;
         $("joinbox").hidden = true;
@@ -838,7 +874,16 @@ function paint(s, p, image, w, h, format) {
     s.hasPicture = true;
     clearTimeout(s.mediaTimer);
     $("first-picture").hidden = true;
-    $("stats").textContent = w + " × " + h;
+    s.statTick = performance.now();
+    s.painted = 0;
+    s.statsTimer = setInterval(() => {
+      const now = performance.now();
+      const fps = Math.round((s.painted * 1000) / (now - s.statTick));
+      $("stats").textContent =
+        `實收 ${canvas.width} × ${canvas.height} · ${fps} fps · ${s.format}`;
+      s.statTick = now;
+      s.painted = 0;
+    }, 1000);
   }
   if (format === "avc") clearTimeout(p.avcTimer);
   if (
@@ -853,25 +898,13 @@ function paint(s, p, image, w, h, format) {
     s.relay.json(p.id, { t: "quality", ...profile(), avc: true });
     p.avcTimer = setTimeout(() => compatibleVideo(s, p), 5000);
   }
-  {
-    const now = performance.now();
-    if (!s.sampleTime) {
-      s.sampleTime = now;
-      s.frameCount = 0;
-    }
-    s.frameCount++;
-    if (now - s.sampleTime >= 1000) {
-      $("stats").textContent =
-        w +
-        " × " +
-        h +
-        " · 實收 " +
-        Math.round((s.frameCount * 1000) / (now - s.sampleTime)) +
-        " fps";
-      s.sampleTime = now;
-      s.frameCount = 0;
-    }
+  s.format =
+    format === "avc" ? "H.264" : format === "direct" ? "WebRTC" : "JPEG";
+  if (!s.painted && !s.reported) {
+    $("stats").textContent = `實收 ${w} × ${h} · ${s.format}`;
+    s.reported = true;
   }
+  s.painted++;
 }
 function localSocket() {
   return new WebSocket(
@@ -944,6 +977,7 @@ function request(s, p, name) {
         control: p.control,
         keyboard: !!s.cap?.keyboard,
         remembered,
+        qualityControls: true,
         name: $("name").value.trim() || defaultName,
         platform,
       });
@@ -1091,14 +1125,23 @@ async function direct(s, p, offer) {
       v.playsInline = true;
       v.srcObject = new MediaStream([e.track]);
       v.play().catch(() => {});
-      const draw = () => {
+      let previousTime = -1;
+      const draw = (_now, metadata) => {
         if (
           !current(s) ||
           !s.peers.has(p.id) ||
           pc.connectionState === "closed"
         )
           return;
-        if (v.readyState >= 2 && pc.connectionState === "connected") {
+        const frameTime = metadata?.mediaTime ?? v.currentTime;
+        if (
+          v.readyState >= 2 &&
+          pc.connectionState === "connected" &&
+          v.videoWidth > 2 &&
+          v.videoHeight > 2 &&
+          frameTime !== previousTime
+        ) {
+          previousTime = frameTime;
           paint(s, p, v, v.videoWidth, v.videoHeight, "direct");
           if (!p.direct) {
             p.direct = true;
@@ -1217,13 +1260,18 @@ function receiveVideo(s, p, bytes) {
 function profile(values) {
   const edge = Number(values ? values.edge : $("quality").value);
   const fps = Number(values ? values.fps : $("fps").value);
+  const sharp = values
+    ? values.sharp === true
+    : $("detail-quality").value === "sharp";
   return {
-    edge: [960, 1280, 1920].includes(edge) ? edge : 1920,
+    edge: EDGES.includes(edge) ? edge : 1920,
+    sharp,
     fps: fps === 60 ? 60 : 30,
   };
 }
 for (const [id, key, defaultValue] of [
-  ["quality", "edge", 1920],
+  ["quality", "edge", 3840],
+  ["detail-quality", "detail", "sharp"],
   ["fps", "fps", 30],
 ]) {
   const select = $(id);
@@ -1232,31 +1280,44 @@ for (const [id, key, defaultValue] of [
   if (!select.value) select.value = String(defaultValue);
   select.onchange = () => {
     const settings = profile();
-    localStorage.setItem("rc-video-" + key, settings[key]);
+    localStorage.setItem("rc-video-" + key, select.value);
     if (viewerSession)
       for (const peer of viewerSession.peers.values())
-        if (peer.approved)
-          viewerSession.relay.json(peer.id, {
-            t: "quality",
-            ...settings,
-            avc: !!peer.avcRequested && !peer.noAVC,
-          });
+        if (peer.approved) {
+          const s = viewerSession;
+          const avc = !!peer.avcRequested && !peer.noAVC;
+          if (avc) {
+            clearTimeout(peer.avcTimer);
+            peer.avcTimer = setTimeout(() => compatibleVideo(s, peer), 5000);
+          }
+          s.relay.json(peer.id, { t: "quality", ...settings, avc });
+        }
   };
 }
 async function tuneSender(s, p) {
   if (!p.sender || !p.profile || !s.hasFrame || p.tuning) return;
-  const { edge, fps } = p.profile,
+  const { edge, fps, sharp } = p.profile,
     size = Math.max(s.source.width, s.source.height);
-  const key = [edge, fps, size].join("/");
+  const key = [edge, fps, sharp, size].join("/");
   if (p.tuned === key) return;
   try {
     p.tuning = true;
     const params = p.sender.getParameters();
     if (!params.encodings?.length) return;
+    params.degradationPreference = sharp ? "maintain-resolution" : "balanced";
     Object.assign(params.encodings[0], {
       maxFramerate: fps,
       scaleResolutionDownBy: Math.max(1, size / edge),
-      maxBitrate: Math.round(edge * edge * fps * 0.11),
+      maxBitrate: Math.min(
+        48000000,
+        Math.round(
+          s.source.width *
+            s.source.height *
+            Math.min(1, edge / size) ** 2 *
+            fps *
+            (sharp ? 0.23 : 0.115),
+        ),
+      ),
     });
     await p.sender.setParameters(params);
     p.tuned = key;
@@ -1271,9 +1332,13 @@ function nextFrame(s) {
   if (!current(s) || !peers.length || s.reading || s.local.readyState !== 1)
     return;
   s.reading = true;
+  s.captureEdge = Math.max(...peers.map((p) => p.profile?.edge || 1920));
+  s.captureSharp = peers.some((p) => p.profile?.sharp);
   s.local.send(
     JSON.stringify({
       type: "primary-frame",
+      edge: s.captureEdge,
+      sharp: s.captureSharp,
       fps: Math.max(...peers.map((p) => p.profile?.fps || 30)),
     }),
   );
@@ -1282,6 +1347,7 @@ function startCapture(s) {
   const source = (s.source = document.createElement("canvas"));
   source.width = source.height = 2;
   s.stream = source.captureStream?.(60);
+  const track = s.stream?.getVideoTracks()[0];
   const fallback = document.createElement("canvas");
   return async (data) => {
     const image = await decodeJpeg(data);
@@ -1291,6 +1357,8 @@ function startCapture(s) {
         source.width = image.width;
         source.height = image.height;
       }
+      if (track && "contentHint" in track)
+        track.contentHint = s.captureSharp ? "detail" : "motion";
       source.getContext("2d").drawImage(image, 0, 0);
       s.hasFrame = true;
       const encoded = new Map(),
@@ -1298,12 +1366,22 @@ function startCapture(s) {
       for (const p of s.peers.values()) {
         if (!p.approved) continue;
         tuneSender(s, p);
-        if (p.direct || now < (p.nextFrame || 0)) continue;
-        const { edge, fps } = p.profile || { edge: 1920, fps: 30 };
-        let jpeg = encoded.get(edge);
+        if (p.direct || p.sendingImage || now < (p.nextFrame || 0)) continue;
+        const { edge, fps, sharp } = p.profile || {
+          edge: 1920,
+          fps: 30,
+          sharp: false,
+        };
+        const limit = p.frameParts ? MAX_IMAGE : SINGLE_IMAGE;
+        const key = [edge, sharp, limit].join("/");
+        let jpeg = encoded.get(key);
         if (!jpeg) {
           const scale = Math.min(1, edge / Math.max(image.width, image.height));
-          if (scale === 1 && data.byteLength < 340000)
+          if (
+            scale === 1 &&
+            data.byteLength <= limit &&
+            !!sharp === s.captureSharp
+          )
             jpeg = new Uint8Array(data);
           else {
             fallback.width = Math.max(1, Math.round(image.width * scale));
@@ -1311,22 +1389,32 @@ function startCapture(s) {
             fallback
               .getContext("2d")
               .drawImage(image, 0, 0, fallback.width, fallback.height);
-            for (const q of [0.88, 0.72, 0.54, 0.36]) {
+            const levels = p.frameParts
+              ? sharp
+                ? [0.95, 0.88, 0.78]
+                : [0.8, 0.72]
+              : [0.88, 0.72, 0.54, 0.36];
+            for (const q of levels) {
               const blob = await new Promise((done) =>
                 fallback.toBlob(done, "image/jpeg", q),
               );
-              if (blob && blob.size < 340000) {
+              if (blob && blob.size <= limit) {
                 jpeg = new Uint8Array(await blob.arrayBuffer());
                 break;
               }
             }
           }
           if (!jpeg) continue;
-          encoded.set(edge, jpeg);
+          encoded.set(key, jpeg);
         }
         if (!current(s) || s.peers.get(p.id) !== p) continue;
-        p.nextFrame = now + Math.max(1000 / fps - 2, (jpeg.length + 64) / 3800);
-        s.relay.send(p.id, 2, jpeg);
+        p.nextFrame = now + 1000 / fps - 1;
+        p.sendingImage = true;
+        Promise.resolve(s.relay.sendImage(p.id, jpeg, p.frameParts)).finally(
+          () => {
+            p.sendingImage = false;
+          },
+        );
       }
     } finally {
       image.close?.();
@@ -1459,7 +1547,10 @@ async function joinDevice(saved, viewOnly = false) {
       );
       if (incoming) {
         s.askedPhone = true;
-        hostSession.relay.json(incoming.id, { t: "ask-phone-screen" });
+        hostSession.relay.json(incoming.id, {
+          t: "ask-phone-screen",
+          control: !viewOnly,
+        });
       }
     } else if (/^[0-9]{4}$/.test(value)) {
       const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");

@@ -137,8 +137,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     if (!sharing) waiting(p, "projection");
     else if (trusted(p) || p.awaitControl)
       decide(p.id, true, !p.viewOnly, trusted(p) || p.rememberDecision);
-    else if ("view".equals(grant) && !p.viewOnly)
-      waiting(p, PhoneControl.enabled() ? "approval" : "access");
+    else if (!p.viewOnly)
+      waiting(p, PhoneControl.busy() ? "busy" : PhoneControl.available() ? "approval" : "access");
   }
 
   private void waiting(Peer p, String reason) {
@@ -175,6 +175,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
                 .put("control", p.control)
                 .put("name", displayName.get())
                 .put("platform", "Android")
+                .put("qualityControls", true)
                 .put("remembered", remembered)
                 .toString()
                 .getBytes(StandardCharsets.UTF_8));
@@ -189,7 +190,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   synchronized int codecProfile() {
     int profile = -1;
     for (Peer p : peers.values()) if (p.approved) {
-      int candidate = p.avc ? p.edge*100+p.fps : 0;
+      int candidate = p.avc ? VideoQuality.codecProfile(p.edge, p.fps, p.quality) : 0;
       if (profile != -1 && candidate != profile) return 0;
       profile = candidate;
     }
@@ -218,8 +219,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     return edge;
   }
 
-  synchronized boolean wants(int edge) {
-    for (Peer p : peers.values()) if (p.approved && p.edge == edge) return true;
+  synchronized boolean wants(int edge, VideoQuality quality) {
+    for (Peer p : peers.values()) if (p.wants(edge, quality)) return true;
     return false;
   }
 
@@ -229,25 +230,55 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     return fps;
   }
 
-  synchronized void publish(byte[] jpeg) { publish(jpeg, 0); }
+  synchronized void publish(byte[] jpeg) {
+    if (closed || jpeg.length > VideoQuality.SINGLE_IMAGE) return;
+    latestFrame = jpeg;
+    for (Peer p : peers.values().toArray(new Peer[0])) {
+      if (p.approved && socket.queueSize() < 420000) {
+        try { send(p, 2, jpeg); } catch (Exception e) { drop(p.id); }
+      }
+    }
+  }
 
-  synchronized void publish(byte[] jpeg, int edge) {
-    if (closed || socket == null || jpeg.length > 340000) return;
-    if (edge == 0) latestFrame = jpeg;
-    if (socket.queueSize() > 420000) return;
-    for (Peer p : peers.values().toArray(new Peer[0]))
-      if (p.approved && (edge == 0 || p.edge == edge)) {
-        long now = android.os.SystemClock.elapsedRealtimeNanos();
-        if (now < p.nextFrame) continue;
-        // Stay below the deployed relay's per-socket 5 MB/s limit including siblings.
-        long wirePeriod = (jpeg.length + 64L) * 1000000000L * Math.max(1,viewers()) / 3800000;
-        p.nextFrame = now + Math.max(1000000000L / p.fps - 1500000L, wirePeriod);
-        try {
-          send(p, 2, jpeg);
-        } catch (Exception e) {
-          drop(p.id);
+  private long nextWire;
+  synchronized void publish(byte[] jpeg, int edge, VideoQuality quality, android.os.Handler worker) {
+    if (closed || socket == null || jpeg.length > quality.maxBytes || socket.queueSize() > 512000) return;
+    for (Peer p : peers.values().toArray(new Peer[0])) {
+      if (!p.wants(edge, quality)) continue;
+      p.sendingImage = true;
+      p.nextFrame = android.os.SystemClock.uptimeMillis() + 1000 / p.fps - 1;
+      queuePiece(p, jpeg, 0, worker);
+    }
+  }
+
+  private void queuePiece(Peer p, byte[] jpeg, int offset, android.os.Handler worker) {
+    boolean fragmented = jpeg.length > VideoQuality.SINGLE_IMAGE;
+    int size = fragmented ? Math.min(VideoQuality.PIECE_BYTES, jpeg.length - offset) : jpeg.length;
+    long due = Math.max(nextWire, android.os.SystemClock.uptimeMillis());
+    nextWire = due + (size + 64 + 3199) / 3200;
+    worker.postAtTime(new Runnable() {
+      @Override public void run() {
+        synchronized (InternetHost.this) {
+          if (closed || peers.get(p.id) != p || !p.approved) {
+            p.sendingImage = false;
+            return;
+          }
+          if (socket.queueSize() > VideoQuality.PIECE_BYTES) {
+            worker.postDelayed(this, 40);
+            return;
+          }
+          try {
+            if (fragmented) {
+              byte[] piece = ByteBuffer.allocate(size + 8).putInt(jpeg.length).putInt(offset)
+                  .put(jpeg, offset, size).array();
+              send(p, 4, piece);
+            } else send(p, 2, jpeg);
+            if (offset + size < jpeg.length) queuePiece(p, jpeg, offset + size, worker);
+            else p.sendingImage = false;
+          } catch (Exception e) { drop(p.id); }
         }
       }
+    }, due);
   }
 
   @Override
@@ -320,6 +351,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
         }
         p.name = name;
         p.platform = m.optString("platform");
+        p.frameParts = m.optBoolean("frameParts", false);
         p.profile(m);
         p.viewOnly = m.optBoolean("viewOnly");
         String proof = resume == null ? null : resume.answer(m.optJSONArray("resume"));
@@ -403,11 +435,18 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     String reason;
     boolean avc, needsKey=true;
     int edge = 1920, fps = 30;
+    boolean sendingImage, frameParts;
+    VideoQuality quality = VideoQuality.LEGACY;
+    boolean wants(int requestedEdge, VideoQuality requestedQuality) {
+      return approved && !sendingImage && edge == requestedEdge && quality == requestedQuality
+          && android.os.SystemClock.uptimeMillis() >= nextFrame;
+    }
     long nextFrame;
     void profile(JSONObject m) {
       avc = m.optBoolean("avc",false); needsKey=true;
-      int value = m.optInt("edge", 1920);
-      edge = value == 960 || value == 1280 ? value : 1920;
+      edge = VideoQuality.edge(m.optInt("edge", 1920));
+      quality = !frameParts ? VideoQuality.LEGACY :
+          m.optBoolean("sharp", false) ? VideoQuality.SHARP : VideoQuality.BALANCED;
       fps = m.optInt("fps", 30) == 60 ? 60 : 30;
     }
     String name, platform = "";
