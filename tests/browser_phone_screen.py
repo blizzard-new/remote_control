@@ -249,5 +249,5 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await phone.locator("#picture").evaluate("c=>c.height"), 800)
                 await expect(phone.locator("#stats")).to_contain_text("1280 × 800")
                 await expect(phone.locator("#stats")).to_contain_text("fps · JPEG")
-                print(f"Desktop JPEG {len(encoded[3840, True]):,} bytes, decoded 2560×1600 → 1280×800; "
-                      f"colored-text mean error {text_error(sharp_pixels):.2f} clear vs {text_error(standard_pixels):.2f} standard.")
+                print(f"Desktop JPEG {len(encoded[3840, True]):,} bytes, decoded 2560x1600 to 1280x800. "
+                      f"Colored-text mean error {text_error(sharp_pixels):.2f} clear vs {text_error(standard_pixels):.2f} standard.")
