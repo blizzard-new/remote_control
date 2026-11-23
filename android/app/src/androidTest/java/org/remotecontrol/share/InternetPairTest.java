@@ -107,7 +107,9 @@ public class InternetPairTest {
               .build();
       try (InternetHost host =
           new InternetHost(server.url("/").toString(), ignored -> {}, client)) {
-        if (trusted) host.grant = "view";
+        if (trusted) host.grant = control ? "control" : "view";
+        else host.startSharing();
+        if (control && !trusted) host.grant = "view";
         host.start();
         WebSocket ws = sockets.poll(8, TimeUnit.SECONDS);
         assertNotNull(ws);
@@ -131,32 +133,48 @@ public class InternetPairTest {
                 view,
                 0,
                 ("\001" + new JSONObject().put("t","request").put("name","tablet")
-                    .put("avc",trusted).put("fps",60).put("edge",1280)).getBytes(UTF8));
+                    .put("viewOnly",trusted && !control).put("avc",trusted).put("fps",60).put("edge",1280)).getBytes(UTF8));
         ws.send(ByteString.of(ByteBuffer.allocate(4 + req.length).putInt(7).put(req).array()));
         if (trusted) {
+          byte[] waiting = binary.poll(5,TimeUnit.SECONDS).toByteArray();
+          byte[] notice = crypt(Cipher.DECRYPT_MODE,share,0,Arrays.copyOfRange(waiting,4,waiting.length));
+          assertEquals("projection",new JSONObject(new String(notice,1,notice.length-1,UTF8)).getString("reason"));
+          assertEquals(0,host.viewers());
+          assertTrue(host.pending().isEmpty());
+          host.decide(7,true,false,true);
+          assertNull(binary.poll(150,TimeUnit.MILLISECONDS));
+          host.startSharing();
           byte[] ready = binary.poll(5,TimeUnit.SECONDS).toByteArray();
-          byte[] data = crypt(Cipher.DECRYPT_MODE,share,0,Arrays.copyOfRange(ready,4,ready.length));
+          byte[] data = crypt(Cipher.DECRYPT_MODE,share,1,Arrays.copyOfRange(ready,4,ready.length));
           JSONObject accepted = new JSONObject(new String(data,1,data.length-1,UTF8));
           assertEquals("approved",accepted.getString("t"));
-          assertFalse(accepted.getBoolean("control"));
+          assertEquals(control,accepted.getBoolean("control"));
           assertTrue(host.pending().isEmpty());
+          connected.run(ws,view);
           assertEquals(128060,host.codecProfile());
           host.video(false,new byte[]{0,5});
           assertNull(binary.poll(100,TimeUnit.MILLISECONDS));
           host.video(true,new byte[]{1,5});
           byte[] keyframe=binary.poll(5,TimeUnit.SECONDS).toByteArray();
-          assertArrayEquals(new byte[]{3,1,5},crypt(Cipher.DECRYPT_MODE,share,1,Arrays.copyOfRange(keyframe,4,keyframe.length)));
+          assertArrayEquals(new byte[]{3,1,5},crypt(Cipher.DECRYPT_MODE,share,2,Arrays.copyOfRange(keyframe,4,keyframe.length)));
           return;
         }
         for (int i = 0; i < 80 && host.pending().isEmpty(); i++) Thread.sleep(50);
         assertEquals("tablet", host.pending().get(7));
+        int outgoing = 0;
+        if (control) {
+          byte[] waiting = binary.poll(5,TimeUnit.SECONDS).toByteArray();
+          byte[] notice = crypt(Cipher.DECRYPT_MODE,share,outgoing++,Arrays.copyOfRange(waiting,4,waiting.length));
+          assertEquals("approval", new JSONObject(new String(notice,1,notice.length-1,UTF8)).getString("reason"));
+          assertEquals(0,host.viewers());
+        }
         byte[] frame = {4, 1, 2, 3};
         host.publish(frame);
         assertNull(binary.poll(200, TimeUnit.MILLISECONDS));
         host.decide(7, true, control, true);
         byte[] approved = binary.poll(5, TimeUnit.SECONDS).toByteArray();
         byte[] clear =
-            crypt(Cipher.DECRYPT_MODE, share, 0, Arrays.copyOfRange(approved, 4, approved.length));
+            crypt(Cipher.DECRYPT_MODE, share, outgoing++, Arrays.copyOfRange(approved, 4, approved.length));
         assertEquals(
             "approved",
             new JSONObject(new String(clear, 1, clear.length - 1, UTF8)).getString("t"));
@@ -167,7 +185,7 @@ public class InternetPairTest {
         byte[] packet = binary.poll(5, TimeUnit.SECONDS).toByteArray();
         assertArrayEquals(
             new byte[] {2, 4, 1, 2, 3},
-            crypt(Cipher.DECRYPT_MODE, share, 1, Arrays.copyOfRange(packet, 4, packet.length)));
+            crypt(Cipher.DECRYPT_MODE, share, outgoing, Arrays.copyOfRange(packet, 4, packet.length)));
       }
     }
   }

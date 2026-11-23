@@ -34,7 +34,7 @@ final class PinDirectory implements AutoCloseable {
   private WebSocket socket;
   private volatile String code = "";
   private boolean closed;
-  private int retries;
+  private int retries, failures;
 
   PinDirectory(String base, OkHttpClient client, Listener result) {
     this.base = base;
@@ -115,10 +115,12 @@ final class PinDirectory implements AutoCloseable {
                     JSONObject m = new JSONObject(text);
                     String type = m.getString("t");
                     if (type.equals("ready")) {
+                      timer.removeCallbacksAndMessages(null);
                       code = next;
-                      retries = 0;
+                      retries = failures = 0;
                       timer.postDelayed(PinDirectory.this::start, 300000);
                     } else if (type.equals("unavailable") && ++retries < 8) start();
+                    else if (type.equals("unavailable")) ws.cancel();
                     else if (type.equals("join")) pending.add((int) m.getLong("id"));
                     else if (type.equals("left")) pending.remove((int) m.getLong("id"));
                   } catch (Exception e) {
@@ -176,12 +178,17 @@ final class PinDirectory implements AutoCloseable {
                 ended(ws);
               }
             });
+    WebSocket connecting = socket;
+    timer.postDelayed(connecting::cancel, 12000);
   }
 
   private void ended(WebSocket ws) {
     synchronized (this) {
       if (closed || socket != ws) return;
       code = "";
+      socket = null;
+      timer.removeCallbacksAndMessages(null);
+      timer.postDelayed(this::start, Math.min(60000L, 1000L << Math.min(failures++, 6)));
     }
     result.stopped();
   }

@@ -19,6 +19,20 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class PinDirectoryTest {
+  @Test public void pinResumeMatchesWebCryptoAndStopsAfterRevocation() throws Exception {
+    PhoneDevices devices = new PhoneDevices(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().getTargetContext());
+    String address = "https://test.invalid", challenge = "0123456789abcdef0123456789abcdef";
+    JSONObject pair = new JSONObject().put("name","Mac").put("address",address)
+        .put("listen","W8j9UP_0_5uoUbe2qUgE6tCuZinmkxsU").put("dial","a-uLqDClD9V4oTeBKaHTDHCFGbRn3kAA").put("grant","control");
+    org.json.JSONArray offers = new org.json.JSONArray().put("OuiVkSRnEt65Nr7CF8ssxa3pZErzjbm03v_oteSfzZg");
+    assertNotEquals("null", devices.update("save",pair.toString()));
+    try {
+      assertEquals("_iN3KDUUXBiloUvS__K6L2jjSh3U2K_F7tBkiUOSB5A", devices.resumeAnswer(offers,address,challenge));
+      assertNull(devices.resumeAnswer(offers,address,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+      assertNull(devices.resumeAnswer(offers,"https://different.invalid",challenge));
+    } finally { devices.update("forget",pair.toString()); }
+    assertNull(devices.resumeAnswer(offers,address,challenge));
+  }
   @Test
   public void androidAgreesWithWebCryptoOnDirectionalDeviceKeys() throws Exception {
     // Public test vector: P-256 private scalars 1 and 2. No production credentials.

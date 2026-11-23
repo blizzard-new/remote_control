@@ -17,6 +17,66 @@ const generate = () =>
 const publicBytes = async (key) =>
   new Uint8Array(await crypto.subtle.exportKey("spki", key.publicKey));
 
+// Bind both halves of a saved pairing to this PIN exchange. Neither the PIN
+// nor a claimed device name can authorize a return to a remembered channel.
+async function resumeProof(secret, role, challenge) {
+  const bytes = Uint8Array.from(
+    atob(secret.replaceAll("-", "+").replaceAll("_", "/")),
+    (c) => c.charCodeAt(0),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    bytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return encode(
+    new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        key,
+        utf8.encode("uniway-resume/v1/" + role + "/" + challenge),
+      ),
+    ),
+  );
+}
+function resumeCandidates(contacts, address) {
+  return contacts
+    .filter(
+      (c) =>
+        c.address === address &&
+        /^[A-Za-z0-9_-]{32}$/.test(c.listen) &&
+        /^[A-Za-z0-9_-]{32}$/.test(c.dial),
+    )
+    .slice(0, 16);
+}
+export function resumeOffers(contacts, address, freshDial) {
+  return Promise.all(
+    resumeCandidates(contacts, address).map(async (pair) => ({
+      pair,
+      offer: await resumeProof(pair.dial, "controller", freshDial),
+      answer: await resumeProof(pair.listen, "host", freshDial),
+    })),
+  );
+}
+export async function resumeAnswer(offers, contacts, address, freshListen) {
+  if (!Array.isArray(offers) || !offers.length || offers.length > 16)
+    return null;
+  const priority = (pair) =>
+    pair.grant === "control" ? 2 : pair.grant === "view" ? 1 : 0;
+  const candidates = resumeCandidates(contacts, address).sort(
+    (a, b) => priority(b) - priority(a),
+  );
+  for (const pair of candidates) {
+    if (
+      offers.includes(await resumeProof(pair.listen, "controller", freshListen))
+    )
+      return resumeProof(pair.dial, "host", freshListen);
+  }
+  return null;
+}
+
 async function derive(keys, other, host) {
   const pub = await crypto.subtle.importKey(
     "spki",
@@ -288,6 +348,7 @@ export class HostChannels {
           ids.delete(remote);
           this.routes.delete(id);
           this.events.left(id);
+          if (!entry.saved && !ids.size) remove();
         },
         packet: (remote, type, data) =>
           this.events.packet(ids.get(remote), type, data),

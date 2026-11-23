@@ -90,6 +90,12 @@ public class PhoneGestureTest {
                 "Encrypted remote click dispatched to the other app",
                 ui.wait(Until.hasObject(By.text("收到遠端點擊")), 5000));
           });
+      InternetPairTest.exerciseHost(true, (socket, viewKey) -> {
+        InternetPairTest.sendEvent(socket, viewKey, 1, down);
+        InternetPairTest.sendEvent(socket, viewKey, 2, up);
+        assertTrue("Trusted controller resumed without another approval",
+            ui.wait(Until.hasObject(By.text("收到第二次遠端點擊")), 5000));
+      }, true);
     } finally {
       PhoneControl.release(controller);
       PhoneControl.captureSize(0, 0);

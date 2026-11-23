@@ -30,6 +30,9 @@ public final class ShareHostActivity extends Activity {
     private Button copyInvite;
     private java.util.Map<String,String> rendered = new java.util.LinkedHashMap<>();
     private boolean prompting, renderedControl;
+    private boolean renderedSharing, transferring, visitingSettings;
+    private PhoneShare preview;
+    private String previewError;
     private int previousViewers = -1;
     private Button enable;
     private AppUpdates updates;
@@ -59,7 +62,7 @@ public final class ShareHostActivity extends Activity {
         page.addView(onlineViewer);
 
         TextView shareHeading = new TextView(this);
-        shareHeading.setText("讓電腦連到這台手機");
+        shareHeading.setText("讓電腦連到這支手機");
         shareHeading.setTextSize(20);
         shareHeading.setPadding(0, padding, 0, 0);
         page.addView(shareHeading);
@@ -80,7 +83,10 @@ public final class ShareHostActivity extends Activity {
         enable.setText("啟用手機觸控操作（第一次設定）");
         enable.setOnClickListener(v -> new android.app.AlertDialog.Builder(this).setTitle("允許電腦操作手機")
             .setMessage("在無障礙設定開啟「遠端桌面觸控操作」。回來分享整個螢幕，再對連線按「允許操作」。")
-            .setPositiveButton("前往設定",(dialog,which)->startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+            .setPositiveButton("前往設定",(dialog,which)->{
+                visitingSettings = true;
+                startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            })
             .setNegativeButton("取消",null).show());
         page.addView(enable);
         relay=new android.widget.EditText(this);
@@ -90,20 +96,24 @@ public final class ShareHostActivity extends Activity {
         pending=new LinearLayout(this);pending.setOrientation(LinearLayout.VERTICAL);
         copyInvite=new Button(this);copyInvite.setText("複製四位數配對碼");
         copyInvite.setOnClickListener(v -> {
-            PhoneShare host=CaptureService.online;
+            PhoneShare host=currentHost();
             if(host!=null && !host.invitation().isEmpty()) getSystemService(android.content.ClipboardManager.class)
                 .setPrimaryClip(android.content.ClipData.newPlainText("四位數配對碼",host.invitation()));
         });
         page.addView(copyInvite);page.addView(pending);
         start = new Button(this);
         start.setText(internetMode.isChecked() ? "開放整個螢幕連線" : "選擇分享畫面");
-        internetMode.setOnCheckedChangeListener((button, checked) ->
-            start.setText(checked ? "開放整個螢幕連線" : "選擇分享畫面"));
+        internetMode.setOnCheckedChangeListener((button, checked) -> {
+            start.setText(checked ? "開放整個螢幕連線" : "選擇分享畫面");
+            if (checked) prepareCode();
+            else { PhoneShare.releasePreview(preview); preview = null; previewError = null; }
+        });
         start.setOnClickListener(v -> {
             if(internetMode.isChecked()) {
                 try { DesktopOrigin.viewerUrl(relay.getText().toString().trim()); }
                 catch(IllegalArgumentException e) { relay.setError("請輸入有效的 HTTPS 服務網址"); return; }
                 getSharedPreferences("ShareActivity", MODE_PRIVATE).edit().putString("relay",relay.getText().toString().trim()).apply();
+                if (!prepareCode()) return;
             }
             prompting = true;
             start.setEnabled(false);
@@ -127,6 +137,23 @@ public final class ShareHostActivity extends Activity {
         updates = new AppUpdates(this, page);
         scroll.addView(page);
         new ScreenInsets(this, scroll);
+    }
+
+    private PhoneShare currentHost() {
+        return CaptureService.status.running ? CaptureService.online : preview;
+    }
+
+    private boolean prepareCode() {
+        try {
+            preview = PhoneShare.prepare(this, relay.getText().toString().trim());
+            previewError = null;
+            return true;
+        } catch (Exception e) {
+            PhoneShare.releasePreview(preview);
+            preview = null;
+            previewError = "無法取得手機連線碼。請檢查進階連線設定中的 HTTPS 服務網址。";
+            return false;
+        }
     }
 
     private void askProjection() {
@@ -158,6 +185,7 @@ public final class ShareHostActivity extends Activity {
                     .putExtra("result", result).putExtra("consent", data)
                     .putExtra("highQuality", highQuality.isChecked());
             if(internetMode.isChecked()) service.putExtra("internet",relay.getText().toString().trim());
+            transferring = true;
             startForegroundService(service);
         }
     }
@@ -165,26 +193,38 @@ public final class ShareHostActivity extends Activity {
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             CaptureService.Status status = CaptureService.status;
-            if (!details.getText().toString().equals(status.text)) details.setText(status.text);
+            if (status.running) { preview = null; transferring = false; }
+            PhoneShare host=currentHost();
+            String message = status.running ? status.text : host != null ? host.status() :
+                previewError == null ? status.text : previewError;
+            if (!details.getText().toString().equals(message)) details.setText(message);
             enable.setVisibility(PhoneControl.enabled()?View.GONE:View.VISIBLE);
             start.setEnabled(!prompting && !status.running);
             internetMode.setEnabled(!prompting && !status.running);
             relay.setVisibility(internetMode.isChecked() && !status.running ? View.VISIBLE : View.GONE);
             highQuality.setEnabled(!internetMode.isChecked() && !prompting && !status.running);
-            PhoneShare host=CaptureService.online;
             int count = host == null ? 0 : host.viewers();
             if (previousViewers == 0 && count > 0 && status.running && hasWindowFocus()) moveTaskToBack(true);
             previousViewers = count;
             copyInvite.setVisibility(host!=null && !host.invitation().isEmpty() ? View.VISIBLE : View.GONE);
             java.util.Map<String,String> requests=host==null ? java.util.Collections.emptyMap() : host.pending();
             boolean canControl=PhoneControl.available();
-            if(!requests.equals(rendered) || canControl!=renderedControl) {
+            boolean sharing=host!=null && host.sharing();
+            if(!requests.equals(rendered) || canControl!=renderedControl || sharing!=renderedSharing) {
                 renderedControl=canControl;
+                renderedSharing=sharing;
                 rendered=requests; pending.removeAllViews();
                 for(java.util.Map.Entry<String,String> entry:requests.entrySet()) {
                     String id=entry.getKey();
                     TextView name=new TextView(ShareHostActivity.this);name.setText(entry.getValue()+" 請求連線。首次允許後，此裝置可依相同權限直接重連。");pending.addView(name);
-                    if(canControl) {
+                    if (!sharing) continue;
+                    if (host.requestedControl(id) && !canControl) {
+                        TextView help = new TextView(ShareHostActivity.this);
+                        help.setText(PhoneControl.busy() ? "目前有其他裝置正在操作。" :
+                            "要操作手機，請先開啟「遠端桌面觸控操作」，並選擇分享整個螢幕。");
+                        pending.addView(help);
+                    }
+                    if(canControl && host.requestedControl(id)) {
                         Button control=new Button(ShareHostActivity.this);control.setText("允許操作");
                         control.setOnClickListener(v -> { host.decide(id,true,true); moveTaskToBack(true); });pending.addView(control);
                     }
@@ -201,11 +241,25 @@ public final class ShareHostActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        visitingSettings = false;
+        if (!CaptureService.status.running && internetMode.isChecked()) prepareCode();
         refresh.run();
         updates.resumed();
     }
 
-    @Override protected void onDestroy() { updates.close(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        if (!isChangingConfigurations()) PhoneShare.releasePreview(preview);
+        updates.close();
+        super.onDestroy();
+    }
+
+    @Override protected void onStop() {
+        if (!prompting && !visitingSettings && !transferring && !isChangingConfigurations()) {
+            PhoneShare.releasePreview(preview);
+            preview = null;
+        }
+        super.onStop();
+    }
 
     @Override protected void onPause() {
         previousViewers = -1;

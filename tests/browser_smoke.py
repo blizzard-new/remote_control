@@ -332,6 +332,21 @@ class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
                 await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
                 await expect(host.locator("#status")).to_contain_text("遠端操作中")
                 await expect(viewer.locator("#stage")).to_be_visible()
+                # Retyping today's PIN must recover the original grant, even after a
+                # restart. Temporarily unavailable macOS input must not prompt again.
+                await viewer.locator("#leave").click()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                desktop.capabilities = {**desktop.capabilities, "control": False, "controlHint": "請開啟輔助使用"}
+                await viewer.locator("#add").click()
+                await viewer.locator("#code").fill(await host.locator("#invite").input_value())
+                await expect(host.get_by_text("請開啟輔助使用", exact=True)).to_be_visible()
+                await expect(host.get_by_role("button",name="允許觀看")).to_have_count(0)
+                await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
+                desktop.capabilities["control"] = True
+                await expect(viewer.locator("#stage")).to_be_visible(timeout=10000)
+                await expect(viewer.locator("#view-mode")).to_be_hidden()
+                await expect(host.locator("#device-count")).to_have_text("1")
+                await expect(viewer.locator("#device-count")).to_have_text("1")
                 await host.locator("#stop").click()
                 await expect(viewer.locator("#stage")).to_be_hidden()
                 # The same pairing also works in reverse without entering a new PIN.

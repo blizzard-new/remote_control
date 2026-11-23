@@ -11,7 +11,8 @@ public class GesturePadActivity extends Activity {
     super.onCreate(state);
     Button button = new Button(this);
     button.setText("等待電腦點擊");
-    button.setOnClickListener(v -> button.setText("收到遠端點擊"));
+    button.setOnClickListener(v -> button.setText("收到遠端點擊".contentEquals(button.getText())
+        ? "收到第二次遠端點擊" : "收到遠端點擊"));
     setContentView(button);
   }
 }

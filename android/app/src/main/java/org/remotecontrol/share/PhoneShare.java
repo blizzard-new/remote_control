@@ -6,21 +6,23 @@ import android.os.Looper;
 import android.util.Base64;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 import okhttp3.OkHttpClient;
 import org.json.JSONObject;
 
-/** Binds a short-lived pairing code and previously approved device channels to one screen share. */
+/** The protected code page can register an address before Android authorizes any capture. */
 final class PhoneShare implements AutoCloseable {
+  private static PhoneShare preview;
   private final String address;
   private final PhoneDevices devices;
   private final Handler main = new Handler(Looper.getMainLooper());
-  private final OkHttpClient client =
-      new OkHttpClient.Builder().pingInterval(22, TimeUnit.SECONDS).build();
+  private final OkHttpClient client;
   private final Map<String, Channel> channels = new LinkedHashMap<>();
+  private final Map<String, Integer> retries = new HashMap<>();
   private final PinDirectory directory;
   private byte[] frame;
-  private boolean closed;
+  private boolean closed, sharing;
+  private volatile boolean reconnecting;
+  private String saveError = "";
 
   private static final class Channel {
     final JSONObject pair;
@@ -33,7 +35,40 @@ final class PhoneShare implements AutoCloseable {
     }
   }
 
-  PhoneShare(Context context, String address, Consumer<String> stopped) {
+  static synchronized PhoneShare prepare(Context context, String address) throws Exception {
+    return prepare(context, address, () -> new OkHttpClient.Builder().pingInterval(22, TimeUnit.SECONDS).build());
+  }
+
+  static synchronized PhoneShare prepare(Context context, String address, java.util.function.Supplier<OkHttpClient> clients) throws Exception {
+    String normalized = okhttp3.HttpUrl.get(address).toString().replaceFirst("/+$", "");
+    if (preview == null || !preview.address.equals(normalized)) {
+      releasePreview(preview);
+      PhoneShare host = new PhoneShare(context.getApplicationContext(), normalized, clients.get());
+      try { host.start(); }
+      catch (Exception e) { host.close(); throw e; }
+      preview = host;
+    }
+    return preview;
+  }
+
+  static synchronized PhoneShare takeForCapture(Context context, String address) throws Exception {
+    PhoneShare host = prepare(context, address);
+    preview = null;
+    return host;
+  }
+
+  static synchronized void releasePreview(PhoneShare host) {
+    if (host != null && host == preview) {
+      preview = null;
+      host.close();
+    }
+  }
+
+  static synchronized void forgetPreview(String key) {
+    if (preview != null) preview.forget(key);
+  }
+
+  private PhoneShare(Context context, String address, OkHttpClient client) {
     okhttp3.HttpUrl parsed = okhttp3.HttpUrl.get(address);
     if (!parsed.isHttps()
         || !parsed.username().isEmpty()
@@ -41,6 +76,7 @@ final class PhoneShare implements AutoCloseable {
         || parsed.query() != null
         || parsed.fragment() != null) throw new IllegalArgumentException("請輸入 HTTPS 配對服務網址");
     this.address = parsed.toString().replaceFirst("/+$", "");
+    this.client = client;
     devices = new PhoneDevices(context);
     directory =
         new PinDirectory(
@@ -52,15 +88,24 @@ final class PhoneShare implements AutoCloseable {
               }
 
               public void stopped() {
-                stopped.accept("配對服務已離線，請重新開啟分享。");
+                reconnecting = true;
               }
             });
   }
 
-  synchronized void start() throws Exception {
+  private synchronized void start() throws Exception {
+    directory.start();
     for (JSONObject pair : devices.list())
       if (address.equals(pair.getString("address"))) listen(pair, true, () -> {});
-    directory.start();
+  }
+
+  synchronized void startSharing() {
+    sharing = true;
+    for (Channel c : channels.values()) c.host.startSharing();
+  }
+
+  synchronized boolean sharing() {
+    return sharing;
   }
 
   private synchronized void listen(JSONObject pair, boolean saved, Runnable ready)
@@ -71,10 +116,10 @@ final class PhoneShare implements AutoCloseable {
     c.host =
         new InternetHost(
             address,
-            msg -> main.post(() -> remove(key)),
+            msg -> main.post(() -> disconnected(key, c)),
             client,
             Base64.decode(key, Base64.URL_SAFE),
-            ready,
+            () -> { main.post(() -> { synchronized (PhoneShare.this) { retries.remove(key); } }); ready.run(); },
             false);
     c.host.displayName = devices::displayName;
     c.host.identify = (name, platform) -> {
@@ -86,6 +131,8 @@ final class PhoneShare implements AutoCloseable {
       }
     };
     c.host.grant = saved ? pair.optString("grant") : "";
+    if (!saved) c.host.resume = offers -> devices.resumeAnswer(offers, address, key);
+    if (sharing) c.host.startSharing();
     channels.put(key, c);
     c.host.start();
     if (frame != null) c.host.publish(frame);
@@ -93,7 +140,7 @@ final class PhoneShare implements AutoCloseable {
       main.postDelayed(
           () -> {
             synchronized (PhoneShare.this) {
-              if (!c.saved) remove(key);
+              if (!c.saved && channels.get(key) == c) remove(key);
             }
           },
           150000);
@@ -102,6 +149,26 @@ final class PhoneShare implements AutoCloseable {
   private synchronized void remove(String key) {
     Channel c = channels.remove(key);
     if (c != null) c.host.close();
+  }
+
+  private synchronized void disconnected(String key, Channel c) {
+    if (closed || channels.get(key) != c) return;
+    remove(key);
+    if (!c.saved) return;
+    int failures = retries.getOrDefault(key, 0);
+    retries.put(key, failures + 1);
+    main.postDelayed(() -> {
+      synchronized (PhoneShare.this) {
+        if (closed || !retries.containsKey(key) || channels.containsKey(key)) return;
+        try {
+          for (JSONObject pair : devices.list())
+            if (key.equals(pair.optString("listen")) && address.equals(pair.optString("address"))) {
+              listen(pair, true, () -> {});
+              break;
+            }
+        } catch (Exception ignored) { }
+      }
+    }, Math.min(60000L, 1000L << Math.min(failures, 6)));
   }
 
   String invitation() {
@@ -119,10 +186,13 @@ final class PhoneShare implements AutoCloseable {
   }
 
   synchronized String status() {
+    for (Channel c : channels.values()) c.host.refreshRequests();
     String pin = invitation();
-    return pin.isEmpty()
-        ? "正在取得四位數配對碼…"
-        : "四位數配對碼　" + pin + "\n\n在電腦輸入這四碼。已配對的電腦可直接點選手機名稱。\n已連線：" + viewers();
+    if (pin.isEmpty()) return reconnecting ? "配對服務暫時連不上，正在重試。請確認手機網路與配對服務網址。" : "正在取得手機的四位數連線碼…";
+    reconnecting = false;
+    return "手機連線碼　" + pin + (sharing
+        ? "\n\n螢幕分享中。已配對的電腦可直接點選手機名稱。\n已連線：" + viewers() + saveError
+        : "\n\n在電腦輸入這四碼。準備好後，按「開放整個螢幕連線」。");
   }
 
   synchronized Map<String, String> pending() {
@@ -149,19 +219,34 @@ final class PhoneShare implements AutoCloseable {
     String name = c.host.pending().get(viewer);
     if (name == null) return;
     control = control && c.host.requestedControl(viewer);
-    if (allow && c.host.grant.isEmpty()) {
+    if (allow && !sharing) return;
+    boolean remembered = c.saved;
+    if (allow && (c.host.grant.isEmpty() || (control && !"control".equals(c.host.grant)))) {
+      remembered = false;
       try {
         c.pair.put("name", name).put("platform", c.host.platform(viewer)).put("address", address).put("grant", control ? "control" : "view");
-        c.saved = !devices.update("save", c.pair.toString()).equals("null");
-        if (c.saved) c.host.grant = c.pair.getString("grant");
+        if (!devices.update("save", c.pair.toString()).equals("null")) {
+          c.saved = true;
+          remembered = true;
+          c.host.grant = c.pair.getString("grant");
+          c.host.resume = null;
+        }
       } catch (Exception ignored) {
       }
+      saveError = remembered ? "" : "\n無法儲存這次授權。請檢查儲存空間，或在裝置列表解除不再使用的配對。";
     }
-    c.host.decide(viewer, allow, control, c.saved);
+    c.host.decide(viewer, allow, control, remembered);
   }
 
   synchronized void forget(String key) {
+    retries.remove(key);
     remove(key);
+  }
+
+  synchronized boolean requestedControl(String id) {
+    String[] parts = id.split("\\.");
+    Channel c = parts.length == 2 ? channels.get(parts[0]) : null;
+    return c != null && c.host.requestedControl(Integer.parseInt(parts[1]));
   }
 
   synchronized int codecProfile() {

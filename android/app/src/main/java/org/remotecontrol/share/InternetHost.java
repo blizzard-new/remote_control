@@ -35,8 +35,12 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
   private final String base;
   private WebSocket socket;
   private byte[] latestFrame;
-  private boolean closed, ready;
+  private boolean closed, ready, sharing;
   volatile String grant = "";
+  interface Resume {
+    String answer(org.json.JSONArray offers) throws Exception;
+  }
+  Resume resume;
   java.util.function.BiConsumer<String, String> identify = (name, platform) -> {};
   java.util.function.Supplier<String> displayName = () -> android.os.Build.MODEL;
 
@@ -86,7 +90,7 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     Map<Integer, String> result = new LinkedHashMap<>();
     for (Peer p : peers.values().toArray(new Peer[0])) {
       if (!p.approved && android.os.SystemClock.elapsedRealtime() - p.started > 120000) drop(p.id);
-      else if (p.name != null && !p.approved) result.put(p.id, p.name);
+      else if (p.name != null && !p.approved && !p.redirected && !trusted(p) && !p.awaitControl) result.put(p.id, p.name);
     }
     return result;
   }
@@ -111,18 +115,58 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     Peer peer = peers.get(id);
     return peer != null && !peer.viewOnly;
   }
+
+  private boolean trusted(Peer p) {
+    return "control".equals(grant) || (p.viewOnly && "view".equals(grant));
+  }
+
+  synchronized void startSharing() {
+    sharing = true;
+    refreshRequests();
+  }
+
+  synchronized void refreshRequests() {
+    for (Peer p : peers.values().toArray(new Peer[0])) {
+      if (p.approved || p.redirected) continue;
+      if (android.os.SystemClock.elapsedRealtime() - p.started > 120000) drop(p.id);
+      else if (p.name != null) checkRequest(p);
+    }
+  }
+
+  private void checkRequest(Peer p) {
+    if (!sharing) waiting(p, "projection");
+    else if (trusted(p) || p.awaitControl)
+      decide(p.id, true, !p.viewOnly, trusted(p) || p.rememberDecision);
+    else if ("view".equals(grant) && !p.viewOnly)
+      waiting(p, PhoneControl.enabled() ? "approval" : "access");
+  }
+
+  private void waiting(Peer p, String reason) {
+    if (reason.equals(p.reason)) return;
+    p.reason = reason;
+    try {
+      send(p, 1, new JSONObject().put("t","control-pending").put("reason",reason)
+          .put("platform","Android").toString().getBytes(StandardCharsets.UTF_8));
+    } catch (Exception e) { drop(p.id); }
+  }
   synchronized void decide(int id, boolean allow) {
     decide(id, allow, false, false);
   }
 
   synchronized void decide(int id, boolean allow, boolean control, boolean remembered) {
     Peer p = peers.get(id);
-    if (p == null || p.name == null || p.approved) return;
+    if (p == null || p.name == null || p.approved || p.redirected || (allow && !sharing)) return;
     try {
       if (allow) {
+        if (control && !p.viewOnly && !PhoneControl.claim(p)) {
+          p.awaitControl = true;
+          p.rememberDecision = remembered;
+          waiting(p, PhoneControl.busy() ? "busy" : "access");
+          return;
+        }
         if (remembered) identify.accept(p.name, p.platform);
         p.approved = true;
-        p.control = control && !p.viewOnly && PhoneControl.claim(p);
+        p.control = control && !p.viewOnly;
         send(
             p,
             1,
@@ -278,7 +322,12 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
         p.platform = m.optString("platform");
         p.profile(m);
         p.viewOnly = m.optBoolean("viewOnly");
-        if ("view".equals(grant) || "control".equals(grant)) decide(id, true, "control".equals(grant), true);
+        String proof = resume == null ? null : resume.answer(m.optJSONArray("resume"));
+        if (proof != null) {
+          p.redirected = true;
+          send(p, 1, new JSONObject().put("t","resume").put("proof",proof)
+              .toString().getBytes(StandardCharsets.UTF_8));
+        } else checkRequest(p);
       } else if (p.approved && "quality".equals(m.optString("t"))) {
         p.profile(m);
       } else if (p.approved && p.control && "input".equals(m.optString("t"))) {
@@ -346,7 +395,8 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     final int id;
     final byte[] tx, rx;
     long outgoing, incoming;
-    boolean approved, control, viewOnly;
+    boolean approved, control, viewOnly, redirected, awaitControl, rememberDecision;
+    String reason;
     boolean avc, needsKey=true;
     int edge = 1920, fps = 30;
     long nextFrame;

@@ -204,7 +204,8 @@ class Room:
                 return await error(host, "控制權設定無效。", id=peer.id)
             if control and (not self.desktop.capabilities.get("control") or
                             any(p.control for p in self.peers.values())):
-                return await error(host, "目前無法授予控制權。請確認主機支援遠端輸入，且其他裝置已結束控制。", id=peer.id)
+                return await error(host, "目前無法授予控制權。請確認主機支援遠端輸入，且其他裝置已結束控制。",
+                                   id=peer.id, code="control-unavailable", capabilities=self.desktop.capabilities)
             peer.approved, peer.control = True, control
             peer.allow_privacy = control and message.get("allowPrivacy") is True
             fields = {"id": peer.id, "control": control, "iceServers": self.ice_servers}

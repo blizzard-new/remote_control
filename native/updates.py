@@ -16,7 +16,7 @@ from urllib.request import build_opener, HTTPSHandler, HTTPRedirectHandler, Requ
 
 import certifi
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 REPOSITORY = "blizzard-new/remote_control"
 LATEST = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 MAX_SIZE = 160 * 1024 * 1024

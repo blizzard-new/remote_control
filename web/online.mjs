@@ -1,4 +1,9 @@
-import { HostChannels, findPin } from "./pairing.mjs";
+import {
+  HostChannels,
+  findPin,
+  resumeOffers,
+  resumeAnswer,
+} from "./pairing.mjs";
 import { devices } from "./devices.mjs";
 import { attachInput } from "./input.mjs";
 import { DEFAULT_RELAY, Relay, parseInvite } from "./relay.mjs";
@@ -192,6 +197,7 @@ for (const button of document.querySelectorAll("nav button"))
 $("back-list").onclick = () => go("devices", false);
 $("add").onclick = () => {
   requestViewOnly = false;
+  $("code").value = "";
   go("connect");
 };
 $("action-connect").onclick = () =>
@@ -202,6 +208,8 @@ $("action-view").onclick = () =>
     : ((requestViewOnly = true), go("connect"));
 $("action-settings").onclick = () => go("settings");
 $("phone-share").onclick = () => window.PhoneDevices?.openHost();
+$("phone-code").hidden = !window.PhoneDevices;
+$("phone-code").onclick = $("phone-share").onclick;
 $("forget").onclick = async () => {
   const pair = selected;
   if (
@@ -226,7 +234,7 @@ function say(value) {
   $("message").hidden = false;
   $("message").textContent = value;
 }
-function closeSession(s, message) {
+function closeSession(s, message, restoreHost = false) {
   if (active !== s) return;
   keyboard(false);
   $("keyboard-button").hidden = true;
@@ -240,6 +248,7 @@ function closeSession(s, message) {
     p.ws?.close();
     p.pc?.close();
     clearTimeout(p.timeout);
+    clearTimeout(p.retryApproval);
     p.video?.pause();
     if (p.decoder && p.decoder.state !== "closed") p.decoder.close();
   }
@@ -247,6 +256,7 @@ function closeSession(s, message) {
   clearTimeout(s.retryTimer);
   clearInterval(s.frames);
   clearInterval(s.captureTimer);
+  clearInterval(s.permissionTimer);
   s.detach?.();
   $("start").hidden = $("connect").disabled = false;
   $("joinbox").hidden =
@@ -270,6 +280,7 @@ function closeSession(s, message) {
   $("video-menu").open = false;
   renderDevices();
   say(message);
+  if (restoreHost && token && !s.host && s.wasApproved) setTimeout(standby, 0);
 }
 function begin(host) {
   if (active) throw Error("已有連線。");
@@ -367,6 +378,8 @@ function peerLeft(s, id) {
   const p = s.peers.get(id);
   if (!p) return;
   s.peers.delete(id);
+  p.ws?.close();
+  clearTimeout(p.retryApproval);
   renderConnections();
   if (s.host)
     for (const waiting of s.peers.values())
@@ -376,12 +389,11 @@ function peerLeft(s, id) {
     s.reading = false;
     s.hasFrame = false;
   }
-  p.ws?.close();
   p.pc?.close();
   p.video?.pause();
   clearTimeout(p.timeout);
   p.row?.remove();
-  if (active === s && !s.host) closeSession(s, "分享已結束。");
+  if (active === s && !s.host) closeSession(s, "分享已結束。", true);
 }
 async function connectRelay(s) {
   const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
@@ -417,6 +429,7 @@ async function connectRelay(s) {
           t: "request",
           viewOnly: !!s.viewOnly,
           avc: typeof VideoDecoder === "function",
+          ...(s.resume?.length ? { resume: s.resume.map((r) => r.offer) } : {}),
           ...profile(),
           name: $("name").value.trim() || defaultName,
           platform,
@@ -486,6 +499,19 @@ async function connectRelay(s) {
       }
       if (type !== 1 || data.length > 96000) return;
       const m = JSON.parse(decoder.decode(data));
+      if (!s.host && !p.approved && m.t === "resume") {
+        const match = s.resume?.find((r) => r.answer === m.proof);
+        if (!match) return;
+        const pair = contacts.find(
+          (c) =>
+            c.listen === match.pair.listen &&
+            c.dial === match.pair.dial &&
+            c.address === s.address,
+        );
+        if (!pair) return closeSession(s, "配對紀錄已變更，請重新連線。");
+        closeSession(s, "");
+        return joinDevice(pair, s.viewOnly);
+      }
       if (
         !s.host &&
         p.control &&
@@ -507,14 +533,33 @@ async function connectRelay(s) {
       }
       if (!s.host && !p.approved && m.t === "control-pending") {
         say(
-          m.reason === "access" && m.platform === "Darwin"
-            ? "請在 Mac 的「隱私權與安全性 → 輔助使用」開啟 RemoteControl，再回主機分頁按「重新檢查操作權限」。"
-            : "已送出操作請求，請在對方的主機分頁確認。",
+          m.reason === "busy"
+            ? "另一台裝置正在操作。結束操作後，已信任的裝置可自動接上。"
+            : m.reason === "projection"
+              ? "手機已收到連線。請在手機開啟整個螢幕分享。"
+              : m.reason === "access" && m.platform === "Darwin"
+                ? "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」開啟 RemoteControl。開啟後會自動重新檢查。"
+                : m.reason === "access" && m.platform === "Android"
+                  ? "請在手機開啟「遠端桌面觸控操作」，並分享整個螢幕。"
+                  : s.pair?.check
+                    ? "請核對 " + s.pair.check + "，並在對方裝置允許操作。"
+                    : "已送出操作請求，請在對方的主機分頁確認。",
         );
         return;
       }
       if (s.host) {
-        if (m.t === "request" && !p.ws) {
+        if (m.t === "request" && !p.requested) {
+          p.requested = true;
+          if (p.pair && !p.pair.saved && m.resume?.length) {
+            const proof = await resumeAnswer(
+              m.resume,
+              contacts,
+              s.address,
+              p.pair.listen,
+            );
+            if (active !== s || s.peers.get(id) !== p) return;
+            if (proof) return s.relay.json(id, { t: "resume", proof });
+          }
           p.profile = profile(m);
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
@@ -543,6 +588,8 @@ async function connectRelay(s) {
         } else if (m.t === "direct") p.direct = m.on === true;
       } else if (m.t === "approved" && !p.approved) {
         p.name = safeText(m.name) || s.pair?.name || "已配對裝置";
+        let saveWarning =
+          s.pair && m.remembered === false ? "對方未能儲存這次授權。" : "";
         if (s.pair && m.remembered) {
           const { listen, dial } = s.pair;
           try {
@@ -557,14 +604,17 @@ async function connectRelay(s) {
               grant: s.pair.grant || "",
             });
           } catch (err) {
-            say(err.message);
+            saveWarning = "本機未能儲存配對，請檢查儲存空間與配對數量。";
           }
         }
         if (active !== s || s.peers.get(id) !== p) return;
         clearTimeout(p.timeout);
         p.approved = true;
+        s.wasApproved = true;
         p.control = m.control === true;
         $("view-mode").hidden = p.control;
+        $("save-warning").textContent = saveWarning;
+        $("save-warning").hidden = !saveWarning;
         $("joinbox").hidden = true;
         $("stage").hidden = false;
         $("cancel").hidden = true;
@@ -654,27 +704,13 @@ function request(s, p, name) {
     const m = JSON.parse(e.data);
     if (m.type === "pending") {
       p.localId = m.id;
-      const grant =
-        p.pair?.saved &&
-        contacts.find(
-          (c) => c.listen === p.pair.listen && c.address === s.address,
-        )?.grant;
       if (m.capabilities) s.cap = m.capabilities;
-      const control = grant === "control" && !p.viewOnly && canOfferControl(s);
-      if (
-        control ||
-        (p.viewOnly && (grant === "view" || grant === "control"))
-      ) {
-        p.claiming = control;
-        s.local.send(
-          JSON.stringify({ type: "approve", id: p.localId, control }),
-        );
-        return;
-      }
-      selected = null;
-      renderDevices();
-      go("devices");
       renderRequest(s, p);
+      if (!p.claiming) {
+        selected = null;
+        renderDevices();
+        go("devices");
+      }
     }
     if (m.type === "keyboard" && p.approved && p.control)
       s.relay.json(p.id, {
@@ -685,6 +721,7 @@ function request(s, p, name) {
     if (m.type === "approved") {
       clearTimeout(p.timeout);
       p.control = m.control;
+      p.claiming = false;
       p.approved = true;
       renderConnections();
       renderRequest(s, p);
@@ -708,6 +745,7 @@ function request(s, p, name) {
           s.relay.remember(p.pair);
           remembered = true;
         } catch (err) {
+          if (p.localGrant) remembered = false;
           say(err.message);
         }
       }
@@ -736,6 +774,24 @@ function canOfferControl(s) {
 }
 function renderRequest(s, p) {
   p.row?.remove();
+  if (!p.approved && p.pair?.saved) {
+    const grant = contacts.find(
+      (c) => c.listen === p.pair.listen && c.address === s.address,
+    )?.grant;
+    const trustedView = p.viewOnly && (grant === "view" || grant === "control");
+    p.trustedControl = !p.viewOnly && grant === "control";
+    if (trustedView || (p.trustedControl && canOfferControl(s))) {
+      p.claiming = true;
+      s.local.send(
+        JSON.stringify({
+          type: "approve",
+          id: p.localId,
+          control: p.trustedControl,
+        }),
+      );
+      return;
+    }
+  }
   const row = (p.row = document.createElement("div"));
   row.className = "card device";
   const name = document.createElement("strong");
@@ -762,7 +818,6 @@ function renderRequest(s, p) {
     const hint = document.createElement("small");
     hint.textContent = "允許後會記住此裝置與權限，下次可直接連線。";
     row.append(hint);
-    button("允許觀看", () => approve(false));
     if (!p.viewOnly) {
       if (canOfferControl(s)) {
         button("允許操作", () => approve(true));
@@ -770,19 +825,54 @@ function renderRequest(s, p) {
         hint.textContent =
           s.cap?.controlHint ||
           "主機目前無法使用鍵盤及滑鼠操作。請檢查系統權限。";
+        if (!s.permissionTimer)
+          s.permissionTimer = setInterval(() => {
+            if (
+              active === s &&
+              s.local.readyState === 1 &&
+              [...s.peers.values()].some(
+                (peer) =>
+                  peer.row &&
+                  !peer.approved &&
+                  !peer.claiming &&
+                  !peer.viewOnly,
+              )
+            )
+              s.local.send(JSON.stringify({ type: "capabilities" }));
+            else {
+              clearInterval(s.permissionTimer);
+              s.permissionTimer = null;
+            }
+          }, 1500);
+        if (platform === "Darwin") {
+          const link = document.createElement("a");
+          link.href =
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+          link.textContent = "開啟 Mac 輔助使用設定";
+          row.append(link);
+        }
         button("重新檢查操作權限", () =>
           s.local.send(JSON.stringify({ type: "capabilities" })),
         );
       } else
-        hint.textContent =
-          "另一台裝置正在操作本機。可先允許觀看，或等對方結束控制。";
-      s.relay.json(p.id, {
-        t: "control-pending",
-        platform,
-        reason: eligible(s) ? "approval" : "access",
-      });
+        hint.textContent = p.trustedControl
+          ? "這台裝置已獲准操作，正在等候目前的操作者離開。"
+          : "另一台裝置正在操作本機。可先允許觀看，或等對方結束控制。";
+      const reason = eligible(s)
+        ? p.trustedControl
+          ? "busy"
+          : "approval"
+        : "access";
+      if (p.sentReason !== reason)
+        s.relay.json(p.id, {
+          t: "control-pending",
+          platform,
+          reason,
+        });
+      p.sentReason = reason;
     }
-    button("拒絕", () => s.relay.drop(p.id));
+    if (!p.trustedControl) button("允許觀看", () => approve(false));
+    button(p.trustedControl ? "取消等候" : "拒絕", () => s.relay.drop(p.id));
   } else button("中斷連線", () => s.relay.drop(p.id));
   $("devices").append(row);
 }
@@ -1092,14 +1182,29 @@ function standby() {
       }
       if (m.type === "capture-error") await captureFailed(s, m.message);
       if (m.type === "capabilities") {
+        const changed =
+          JSON.stringify(s.cap) !== JSON.stringify(m.capabilities);
         s.cap = m.capabilities;
-        for (const p of s.peers.values())
-          if (p.row && !p.approved && !p.claiming) renderRequest(s, p);
+        if (changed)
+          for (const p of s.peers.values())
+            if (p.row && !p.approved && !p.claiming) renderRequest(s, p);
       }
       if (m.type === "error" && !m.id) throw Error(m.message);
       if (m.type === "error" && m.id)
         for (const p of s.peers.values())
-          if (p.localId === m.id) s.relay.drop(p.id);
+          if (p.localId === m.id) {
+            if (m.code !== "control-unavailable" || !p.trustedControl) {
+              s.relay.drop(p.id);
+              continue;
+            }
+            s.cap = m.capabilities;
+            clearTimeout(p.retryApproval);
+            p.retryApproval = setTimeout(() => {
+              if (active !== s || s.peers.get(p.id) !== p || p.approved) return;
+              p.claiming = false;
+              renderRequest(s, p);
+            }, 1500);
+          }
     } catch (err) {
       closeSession(s, err.message);
     }
@@ -1137,7 +1242,10 @@ async function joinDevice(saved, viewOnly = false) {
       $("relay").value = saved.address;
       s.pair = { ...saved, saved: true };
     } else if (/^[0-9]{4}$/.test(value)) {
-      s.pair = await findPin($("relay").value.trim(), value, s.abort.signal);
+      const address = new URL($("relay").value.trim()).href.replace(/\/+$/, "");
+      s.pair = await findPin(address, value, s.abort.signal);
+      await refreshDevices();
+      s.resume = await resumeOffers(contacts, address, s.pair.dial);
     } else {
       const parsed = parseInvite(value, $("relay").value.trim());
       $("relay").value = parsed.address;
@@ -1166,7 +1274,7 @@ $("cancel").onclick =
   $("stop").onclick =
   $("leave").onclick =
     () => {
-      if (active) closeSession(active, "連線已結束。");
+      if (active) closeSession(active, "連線已結束。", true);
     };
 window.addEventListener("pagehide", () => {
   if (active) closeSession(active, "連線已結束。");

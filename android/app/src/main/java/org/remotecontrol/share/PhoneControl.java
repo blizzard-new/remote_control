@@ -8,7 +8,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
-import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import org.json.JSONObject;
 
@@ -81,6 +80,9 @@ public final class PhoneControl extends AccessibilityService {
   static synchronized boolean enabled() {
     return service != null;
   }
+  static synchronized boolean busy() {
+    return controller != null;
+  }
 
   static synchronized boolean available() {
     if (service == null || controller != null || captureWidth <= 0) return false;
@@ -126,9 +128,7 @@ public final class PhoneControl extends AccessibilityService {
   }
 
   private DisplayMetrics metrics() {
-    DisplayMetrics m = new DisplayMetrics();
-    getSystemService(WindowManager.class).getDefaultDisplay().getRealMetrics(m);
-    return m;
+    return CaptureService.screenMetrics(this);
   }
 
   private boolean userScreen() {

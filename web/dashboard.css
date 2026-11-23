@@ -265,6 +265,13 @@ h2 {
 .device-row strong {
   overflow-wrap: anywhere;
 }
+#phone-code {
+  margin: 8px 0;
+  color: #175b99;
+  background: var(--pale);
+  min-height: 44px;
+  width: 100%;
+}
 .device-row[aria-pressed="true"] {
   background: var(--pale);
   color: #175b99;
@@ -646,6 +653,7 @@ i[data-i="sliders"] {
   display: none;
 }
 
+#save-warning,
 #view-mode {
   color: white;
   background: #263953;

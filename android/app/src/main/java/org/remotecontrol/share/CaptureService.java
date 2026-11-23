@@ -115,6 +115,12 @@ public final class CaptureService extends Service {
         internetAddress = intent.getStringExtra("internet");
         highQuality = internetAddress == null && intent.getBooleanExtra("highQuality", false);
         status = new Status(true, "正在建立加密連線…");
+        if (internetAddress != null) {
+            try {
+                internet = PhoneShare.takeForCapture(this, internetAddress);
+                online = internet;
+            } catch (Exception e) { stopWith("無法開放手機連線：" + reason(e)); return START_NOT_STICKY; }
+        }
         worker.post(() -> {
             try { begin(consent); }
             catch (Exception error) { stopWith("無法開始分享：" + reason(error)); }
@@ -130,10 +136,8 @@ public final class CaptureService extends Service {
     private void begin(Intent consent) throws Exception {
         if (destroyed) return;
         if (internetAddress != null) {
-            internet = new PhoneShare(this, internetAddress, this::stopWith);
-            online = internet;
             beginProjection(consent);
-            internet.start();
+            internet.startSharing();
             worker.postDelayed(new Runnable() {
                 @Override public void run() {
                     if (destroyed) return;
@@ -205,7 +209,7 @@ public final class CaptureService extends Service {
         projection = getSystemService(MediaProjectionManager.class).getMediaProjection(Activity.RESULT_OK, consent);
         if (projection == null) throw new IllegalStateException("系統拒絕擷取螢幕。");
         projection.registerCallback(projectionCallback, worker);
-        DisplayMetrics metrics = screenMetrics();
+        DisplayMetrics metrics = screenMetrics(this);
         resize(metrics.widthPixels, metrics.heightPixels);
     }
 
@@ -220,8 +224,8 @@ public final class CaptureService extends Service {
         catch (RuntimeException error) { stopWith("無法調整擷取範圍：" + reason(error)); }
     }
 
-    private DisplayMetrics screenMetrics() {
-        Display screen = getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
+    static DisplayMetrics screenMetrics(android.content.Context context) {
+        Display screen = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
         DisplayMetrics metrics = new DisplayMetrics();
         screen.getRealMetrics(metrics);
         return metrics;
@@ -230,7 +234,7 @@ public final class CaptureService extends Service {
     @Override public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
         if (Build.VERSION.SDK_INT < 34) worker.post(() -> {
-            DisplayMetrics metrics = screenMetrics();
+            DisplayMetrics metrics = screenMetrics(this);
             changeSize(metrics.widthPixels, metrics.heightPixels);
         });
     }
@@ -369,9 +373,9 @@ public final class CaptureService extends Service {
         destroyed = true;
         PhoneControl.releaseAll(); PhoneControl.captureSize(0,0);
         status = new Status(false, endReason);
+        if (online == internet) online = null;
         main.removeCallbacksAndMessages(null);
         worker.postAtFrontOfQueue(() -> {
-            if (online == internet) online = null;
             if (internet != null) internet.close();
             if (server != null) server.close();
             if (display != null) display.release();

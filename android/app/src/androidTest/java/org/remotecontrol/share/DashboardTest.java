@@ -49,7 +49,7 @@ public class DashboardTest {
             while (SystemClock.elapsedRealtime() < deadline && !"true".equals(state.get())) {
                 CountDownLatch done = new CountDownLatch(1);
                 test.runOnMainSync(() -> web.evaluateJavascript(
-                    "document.body?.dataset.page === 'devices' && document.getElementById('self-name')?.textContent === PhoneDevices.name() && document.getElementById('connected-count')?.textContent === '0'",
+                    "document.body?.dataset.page === 'devices' && document.getElementById('self-name')?.textContent === PhoneDevices.name() && document.getElementById('connected-count')?.textContent === '0' && document.getElementById('phone-code')?.getBoundingClientRect().height > 0",
                     result -> { state.set(result); done.countDown(); }));
                 assertTrue(done.await(3, TimeUnit.SECONDS));
                 SystemClock.sleep(100);

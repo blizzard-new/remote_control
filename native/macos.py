@@ -8,7 +8,7 @@ from math import trunc
 from time import monotonic
 
 
-ACCESS_HINT = "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」開啟 RemoteControl，再回主機分頁按「重新檢查操作權限」。從原始碼啟動時請允許對應的終端機或 Python。"
+ACCESS_HINT = "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」開啟 RemoteControl。主機會自動重新檢查操作權限。從原始碼啟動時請允許對應的終端機或 Python。"
 
 # Physical DOM positions mapped to the virtual key codes in Carbon Events.h.
 # The current Mac input source determines the resulting characters.

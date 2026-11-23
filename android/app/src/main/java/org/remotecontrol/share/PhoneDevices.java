@@ -42,6 +42,29 @@ public final class PhoneDevices {
     return label.isEmpty() ? name() : label;
   }
 
+  static String resumeProof(String secret, String role, String challenge) throws Exception {
+    javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+    mac.init(new javax.crypto.spec.SecretKeySpec(android.util.Base64.decode(secret, android.util.Base64.URL_SAFE), "HmacSHA256"));
+    return PinDirectory.b64(mac.doFinal(("uniway-resume/v1/" + role + "/" + challenge)
+        .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+  }
+
+  String resumeAnswer(JSONArray offers, String address, String challenge) throws Exception {
+    if (offers == null || offers.length() == 0 || offers.length() > 16) return null;
+    List<JSONObject> candidates = list();
+    candidates.sort(java.util.Comparator.comparingInt(pair ->
+        "control".equals(pair.optString("grant")) ? 0 : "view".equals(pair.optString("grant")) ? 1 : 2));
+    for (JSONObject pair : candidates) {
+      if (!address.equals(pair.optString("address"))) continue;
+      String expected = resumeProof(pair.getString("listen"), "controller", challenge);
+      for (int i = 0; i < offers.length(); i++) {
+        if (expected.equals(offers.optString(i)))
+          return resumeProof(pair.getString("dial"), "host", challenge);
+      }
+    }
+    return null;
+  }
+
   @JavascriptInterface
   public String sessionState() throws org.json.JSONException {
     CaptureService.Status state = CaptureService.status;
@@ -95,6 +118,7 @@ public final class PhoneDevices {
             new android.os.Handler(android.os.Looper.getMainLooper())
                 .post(
                     () -> {
+                      PhoneShare.forgetPreview(listen);
                       PhoneShare active = CaptureService.online;
                       if (active != null) active.forget(listen);
                     });
