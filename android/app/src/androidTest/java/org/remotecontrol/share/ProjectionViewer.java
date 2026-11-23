@@ -98,7 +98,7 @@ final class ProjectionViewer extends WebSocketListener {
       if (plain[0] == 4) {
         ByteBuffer piece = ByteBuffer.wrap(plain);
         piece.get();
-        int total = piece.getInt(), offset = piece.getInt();
+        int total = piece.getInt(), offset = piece.getInt(), serial = piece.getInt();
         if (offset == 0) {
           if (total <= 340000 || total > 8 * 1024 * 1024) throw new AssertionError("Frame size");
           partial = new byte[total]; received = 0;
@@ -107,7 +107,10 @@ final class ProjectionViewer extends WebSocketListener {
         int size = piece.remaining();
         piece.get(partial, offset, size);
         received += size;
-        if (received == total) { receivedParts = true; image(partial); partial = null; }
+        if (received == total) {
+          receivedParts = true; image(partial); partial = null;
+          send(new JSONObject().put("t", "image-received").put("serial", serial));
+        }
       }
     } catch (Exception e) {
       throw new AssertionError(e);

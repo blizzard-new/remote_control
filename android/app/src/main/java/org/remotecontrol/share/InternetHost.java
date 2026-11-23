@@ -245,8 +245,16 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     if (closed || socket == null || jpeg.length > quality.maxBytes || socket.queueSize() > 512000) return;
     for (Peer p : peers.values().toArray(new Peer[0])) {
       if (!p.wants(edge, quality)) continue;
+      long now = android.os.SystemClock.uptimeMillis();
+      p.nextFrame = now + 1000 / p.fps - 1;
+      if (now - p.lastImageAt < 2000 && java.util.Arrays.equals(jpeg, p.lastImage)) continue;
+      p.lastImageAt = now;
+      p.lastImage = jpeg;
       p.sendingImage = true;
-      p.nextFrame = android.os.SystemClock.uptimeMillis() + 1000 / p.fps - 1;
+      if (jpeg.length > VideoQuality.SINGLE_IMAGE) {
+        p.imageSerial = p.imageSerial == Integer.MAX_VALUE ? 1 : p.imageSerial + 1;
+        p.ackUntil = Long.MAX_VALUE;
+      }
       queuePiece(p, jpeg, 0, worker);
     }
   }
@@ -269,12 +277,15 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
           }
           try {
             if (fragmented) {
-              byte[] piece = ByteBuffer.allocate(size + 8).putInt(jpeg.length).putInt(offset)
+              byte[] piece = ByteBuffer.allocate(size + 12).putInt(jpeg.length).putInt(offset).putInt(p.imageSerial)
                   .put(jpeg, offset, size).array();
               send(p, 4, piece);
             } else send(p, 2, jpeg);
             if (offset + size < jpeg.length) queuePiece(p, jpeg, offset + size, worker);
-            else p.sendingImage = false;
+            else {
+              p.sendingImage = false;
+              if (fragmented && p.ackUntil != 0) p.ackUntil = android.os.SystemClock.uptimeMillis() + 25000;
+            }
           } catch (Exception e) { drop(p.id); }
         }
       }
@@ -364,7 +375,10 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
         p.viewOnly = true;
         p.awaitControl = false;
         checkRequest(p);
+      } else if (p.approved && "image-received".equals(m.optString("t"))) {
+        if (m.optInt("serial", -1) == p.imageSerial) p.ackUntil = 0;
       } else if (p.approved && "quality".equals(m.optString("t"))) {
+        p.lastImage = null;
         p.profile(m);
       } else if (p.approved && p.control && "input".equals(m.optString("t"))) {
         PhoneControl.input(p, m.optJSONObject("event"));
@@ -436,10 +450,13 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     boolean avc, needsKey=true;
     int edge = 1920, fps = 30;
     boolean sendingImage, frameParts;
+    int imageSerial;
+    long ackUntil, lastImageAt;
+    byte[] lastImage;
     VideoQuality quality = VideoQuality.LEGACY;
     boolean wants(int requestedEdge, VideoQuality requestedQuality) {
       return approved && !sendingImage && edge == requestedEdge && quality == requestedQuality
-          && android.os.SystemClock.uptimeMillis() >= nextFrame;
+          && android.os.SystemClock.uptimeMillis() >= Math.max(nextFrame, ackUntil);
     }
     long nextFrame;
     void profile(JSONObject m) {

@@ -158,6 +158,7 @@ export class Relay {
         return;
       }
       if (m.t === "left") {
+        this.peers.get(m.id)?.acknowledge?.();
         this.peers.delete(m.id);
         this.events.left(m.id);
         return;
@@ -222,6 +223,11 @@ export class Relay {
       .finally(() => peer.pending--);
     return peer.queue;
   }
+  imageReceived(id, serial) {
+    const peer = this.peers.get(id);
+    if (peer && peer.imageSerial === serial) peer.acknowledge?.();
+  }
+
   async sendImage(id, image, parts) {
     const peer = this.peers.get(id);
     if (
@@ -232,8 +238,15 @@ export class Relay {
     )
       return;
     peer.sendingImage = true;
+    const fragmented = image.length > SINGLE_IMAGE;
+    let receipt, timer;
+    if (fragmented) {
+      peer.imageSerial = ((peer.imageSerial || 0) + 1) >>> 0 || 1;
+      receipt = new Promise((done) => {
+        peer.acknowledge = done;
+      });
+    }
     try {
-      const fragmented = image.length > SINGLE_IMAGE;
       for (
         let offset = 0;
         offset < image.length;
@@ -264,10 +277,17 @@ export class Relay {
         await this.send(
           id,
           fragmented ? 4 : 2,
-          fragmented ? imagePiece(image, offset) : image,
+          fragmented ? imagePiece(image, offset, peer.imageSerial) : image,
         );
       }
+      // A slow downstream must finish one large frame before another one is queued.
+      if (fragmented && this.peers.get(id) === peer) {
+        timer = setTimeout(peer.acknowledge, 25000);
+        await receipt;
+      }
     } finally {
+      clearTimeout(timer);
+      peer.acknowledge = null;
       peer.sendingImage = false;
     }
   }
@@ -275,6 +295,7 @@ export class Relay {
     return this.send(id, 1, utf8.encode(JSON.stringify(value)));
   }
   drop(id) {
+    this.peers.get(id)?.acknowledge?.();
     if (!this.peers.delete(id)) return;
     if (this.host && this.ws?.readyState === 1)
       this.ws.send(JSON.stringify({ t: "drop", id }));
@@ -283,6 +304,7 @@ export class Relay {
   }
   close() {
     this.closed = true;
+    for (const peer of this.peers.values()) peer.acknowledge?.();
     this.peers.clear();
     this.ws?.close();
   }

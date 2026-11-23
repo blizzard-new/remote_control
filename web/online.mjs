@@ -1,4 +1,10 @@
-import { EDGES, SINGLE_IMAGE, MAX_IMAGE, ImageAssembly } from "./video.mjs";
+import {
+  EDGES,
+  SINGLE_IMAGE,
+  MAX_IMAGE,
+  ImageAssembly,
+  sameImage,
+} from "./video.mjs";
 import {
   HostChannels,
   findPin,
@@ -595,8 +601,10 @@ async function connectRelay(s) {
       }
       if (type === 4 && !s.host && p.approved) {
         p.assembly ??= new ImageAssembly();
-        data = p.assembly.accept(data);
-        if (!data) return;
+        const frame = p.assembly.accept(data);
+        if (!frame) return;
+        s.relay.json(id, { t: "image-received", serial: frame.serial });
+        data = frame.image;
         type = 2;
       }
       if (type === 2) {
@@ -720,7 +728,10 @@ async function connectRelay(s) {
           return;
         }
         if (!p.approved) return;
+        if (m.t === "image-received")
+          return s.relay.imageReceived(p.id, m.serial);
         if (m.t === "quality") {
+          p.lastImage = null;
           p.profile = profile(m);
           tuneSender(s, p);
           return;
@@ -1409,6 +1420,10 @@ function startCapture(s) {
         }
         if (!current(s) || s.peers.get(p.id) !== p) continue;
         p.nextFrame = now + 1000 / fps - 1;
+        if (now - p.lastImageAt < 2000 && sameImage(p.lastImage, jpeg))
+          continue;
+        p.lastImage = jpeg;
+        p.lastImageAt = now;
         p.sendingImage = true;
         Promise.resolve(s.relay.sendImage(p.id, jpeg, p.frameParts)).finally(
           () => {

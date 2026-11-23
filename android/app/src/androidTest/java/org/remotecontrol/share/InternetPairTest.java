@@ -162,12 +162,14 @@ public class InternetPairTest {
         for (int i = 0; i < 80 && host.pending().isEmpty(); i++) Thread.sleep(50);
         assertEquals("tablet", host.pending().get(7));
         int outgoing = 0;
-        if (control) {
-          byte[] waiting = binary.poll(5,TimeUnit.SECONDS).toByteArray();
-          byte[] notice = crypt(Cipher.DECRYPT_MODE,share,outgoing++,Arrays.copyOfRange(waiting,4,waiting.length));
-          assertEquals("approval", new JSONObject(new String(notice,1,notice.length-1,UTF8)).getString("reason"));
-          assertEquals(0,host.viewers());
-        }
+        // Both requests start in control mode. A status message may arrive before consent,
+        // while sending image pixels or input still requires the phone owner's decision.
+        byte[] waiting = binary.poll(5,TimeUnit.SECONDS).toByteArray();
+        byte[] notice = crypt(Cipher.DECRYPT_MODE,share,outgoing++,Arrays.copyOfRange(waiting,4,waiting.length));
+        JSONObject pending = new JSONObject(new String(notice,1,notice.length-1,UTF8));
+        assertEquals("control-pending", pending.getString("t"));
+        assertEquals(PhoneControl.available() ? "approval" : "access", pending.getString("reason"));
+        assertEquals(0,host.viewers());
         byte[] frame = {4, 1, 2, 3};
         host.publish(frame);
         assertNull(binary.poll(200, TimeUnit.MILLISECONDS));
