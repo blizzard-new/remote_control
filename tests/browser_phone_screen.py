@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from aiohttp.test_utils import TestServer
 from PIL import Image, ImageDraw
@@ -82,10 +83,16 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
             device.capabilities = {
                 **device.capabilities, "control": False, "controlHint": "鍵鼠操作尚未開啟"
             }
+        phone.capabilities["controlReason"] = "unavailable"
+        report = {"application": "/Applications/RemoteControl.app", "accessibility": True,
+                  "postEvents": False, "screen": True, "relaunch": True}
+        mac.mac_permissions = Mock(return_value=report)
+        mac.request_control = Mock()
         with TemporaryDirectory() as tmp:
             mac_db, phone_db = Path(tmp) / "mac.db", Path(tmp) / "phone.db"
             mac_screen = Screen(jpeg(Image.new("RGB", (480, 320), (25, 57, 220))))
-            mac_app = create_app("mac", mac, device_store=mac_db, primary_capture=mac_screen)
+            with patch("server.app.platform.system", return_value="Darwin"):
+                mac_app = create_app("mac", mac, device_store=mac_db, primary_capture=mac_screen)
             phone_app = create_app("phone", phone, device_store=phone_db, primary_capture=Screen(phone_frame()))
             async with AsyncExitStack() as stack:
                 relay = await stack.enter_async_context(TestServer(relay_app()))
@@ -103,6 +110,17 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 stack.push_async_callback(browser.close)
                 laptop = await open_device(browser, mac_site, address, "MacBook", "Darwin", "mac")
                 handset = await open_device(browser, phone_site, address, "Samsung", "Android", "phone")
+
+                await laptop.locator('nav [data-page="settings"]').click()
+                await expect(laptop.locator("#mac-app-path")).to_contain_text(report["application"])
+                await expect(laptop.locator("#mac-access")).to_contain_text("鍵鼠事件 尚未取得")
+                await expect(laptop.locator("#mac-request")).to_be_hidden()
+                await expect(laptop.locator("#mac-relaunch")).to_be_visible()
+                report["postEvents"] = True
+                await laptop.locator("#mac-check").click()
+                await expect(laptop.locator("#mac-access")).to_contain_text("鍵鼠事件 已允許")
+                mac.request_control.assert_not_called()
+                await laptop.locator('nav [data-page="devices"]').click()
 
                 await handset.locator("#remembered button").first.click()
                 await handset.locator("#action-view").click()

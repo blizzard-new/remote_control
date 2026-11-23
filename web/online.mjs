@@ -235,11 +235,12 @@ async function macPermissions(action) {
       headers: { "Content-Type": "application/json", "X-Host-Token": token },
       body: JSON.stringify({ action }),
     });
+    const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw Error(
-        "無法讀取目前程序的權限，請使用從「應用程式」開啟的新版 RemoteControl 分頁。",
+        result.error ||
+          "無法讀取目前程序的權限，請使用從「應用程式」開啟的新版 RemoteControl 分頁。",
       );
-    const result = await response.json();
     if (result.relaunching) {
       $("mac-access").textContent =
         "已要求重新開啟。請使用新開啟的 RemoteControl 分頁。";
@@ -648,7 +649,9 @@ async function connectRelay(s) {
       }
       if (!s.host && !p.approved && m.t === "control-pending") {
         $("join-watch").hidden =
-          s.viewOnly || !m.canView || !["access", "busy"].includes(m.reason);
+          s.viewOnly ||
+          !m.canView ||
+          !["access", "busy", "unavailable"].includes(m.reason);
         viewerNote(
           s,
           m.reason === "busy"
@@ -1043,13 +1046,8 @@ function renderRequest(s, p) {
               s.permissionTimer = null;
             }
           }, 1500);
-        if (platform === "Darwin" && s.cap?.controlReason !== "unavailable") {
-          const link = document.createElement("a");
-          link.href =
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-          link.textContent = "開啟 Mac 輔助使用設定";
-          row.append(link);
-        }
+        if (platform === "Darwin")
+          button("查看目前的 Mac 權限", () => go("settings"));
         button("重新檢查操作權限", () =>
           s.local.send(JSON.stringify({ type: "capabilities" })),
         );
