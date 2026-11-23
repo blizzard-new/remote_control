@@ -266,12 +266,6 @@ final class PhoneShare implements AutoCloseable {
     for (Channel c : channels.values()) c.host.video(key,packet);
   }
 
-  synchronized int edge() {
-    int value = 0;
-    for (Channel c : channels.values()) value = Math.max(value,c.host.edge());
-    return value;
-  }
-
   synchronized int fps() {
     int value = 0;
     for (Channel c : channels.values()) value = Math.max(value,c.host.fps());

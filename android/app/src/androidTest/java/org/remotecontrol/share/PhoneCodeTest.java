@@ -157,15 +157,20 @@ public class PhoneCodeTest {
 
   private static byte[] visiblePhoneFrame(ProjectionViewer viewer, int expectedEdge) throws InterruptedException {
     long deadline = SystemClock.elapsedRealtime() + 18000;
+    int frames = 0;
+    String sample = "no decodable image";
     while (SystemClock.elapsedRealtime() < deadline) {
       byte[] frame = viewer.images.poll(500, TimeUnit.MILLISECONDS);
       if (frame == null) continue;
       Bitmap image = BitmapFactory.decodeByteArray(frame, 0, frame.length);
       if (image == null) continue;
       try {
-        if (Math.max(image.getWidth(), image.getHeight()) != expectedEdge) continue;
         int left = image.getPixel(image.getWidth() / 4, image.getHeight() / 2);
         int right = image.getPixel(3 * image.getWidth() / 4, image.getHeight() / 2);
+        frames++;
+        sample = image.getWidth() + "x" + image.getHeight() + " sampled " +
+            Integer.toHexString(left) + " and " + Integer.toHexString(right);
+        if (Math.max(image.getWidth(), image.getHeight()) != expectedEdge) continue;
         if (Color.green(left) > 160
             && Color.red(left) < 65
             && Color.red(right) > 160
@@ -174,7 +179,7 @@ public class PhoneCodeTest {
         image.recycle();
       }
     }
-    throw new AssertionError(
-        "The viewer never received both visible colors of the projected Android app");
+    throw new AssertionError("Expected the projected Android app at long edge " + expectedEdge +
+        ", received " + frames + " frames, last " + sample + ", fragmented image completed " + viewer.receivedParts);
   }
 }

@@ -6,7 +6,8 @@ enum VideoQuality {
     BALANCED(8 * 1024 * 1024, 80, 72),
     SHARP(8 * 1024 * 1024, 95, 88, 78);
 
-    static final int[] EDGES = {960, 1280, 1920, 2560, 3840};
+    static final int MAX_EDGE = 3840;
+    static final int[] EDGES = {960, 1280, 1920, 2560, MAX_EDGE};
     static final int SINGLE_IMAGE = 340000;
     static final int PIECE_BYTES = 220000;
     static final int SHARP_BIT = 1 << 20;
