@@ -303,7 +303,9 @@ public final class CaptureService extends Service {
             encodedSourceHeight = sourceHeight;
             return;
         }
-        int edge = internet == null ? 1280 : Math.max(960, internet.edge());
+        // A static app may not redraw after Android replaces the projection surface.
+        // Keep one full-detail capture and encode the latest pixels at each viewer's size.
+        int edge = internet == null ? 1280 : VideoQuality.MAX_EDGE;
         double scale = Math.min(1, edge / (double)Math.max(sourceWidth, sourceHeight));
         int w = Math.max(1, (int) Math.round(sourceWidth * scale));
         int h = Math.max(1, (int) Math.round(sourceHeight * scale));

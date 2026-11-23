@@ -213,12 +213,6 @@ final class InternetHost extends WebSocketListener implements AutoCloseable {
     }
   }
 
-  synchronized int edge() {
-    int edge = 0;
-    for (Peer p : peers.values()) if (p.approved) edge = Math.max(edge, p.edge);
-    return edge;
-  }
-
   synchronized boolean wants(int edge, VideoQuality quality) {
     for (Peer p : peers.values()) if (p.wants(edge, quality)) return true;
     return false;
