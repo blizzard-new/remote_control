@@ -63,7 +63,7 @@ public class PhoneGestureTest {
               .setClassName(
                   inst.getContext().getPackageName(),
                   "org.remotecontrol.share.test.GesturePadActivity")
-              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
       UiObject2 pad = ui.wait(Until.findObject(By.text("等待電腦點擊")), 5000);
       assertNotNull(pad);
       ui.waitForIdle();

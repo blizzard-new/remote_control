@@ -126,7 +126,7 @@ public class PhoneCodeTest {
                     inst.getContext().getPackageName(),
                     "org.remotecontrol.share.test.GesturePadActivity")
                 .putExtra("colorPattern", true)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
         File fixture = new File(context.getCacheDir(), "verified-phone-screen.jpg");
         byte[] frame = visiblePhoneFrame(viewer);
         try (FileOutputStream file = new FileOutputStream(fixture)) {
