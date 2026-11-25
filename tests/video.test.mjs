@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Relay } from "../web/relay.mjs";
 import {
   ImageAssembly,
   imagePiece,
@@ -27,4 +28,20 @@ test("only complete, bounded, ordered relay images reach the decoder", () => {
   new DataView(malformed.buffer).setUint32(0, MAX_IMAGE + 1);
   assert.equal(receiver.accept(malformed), undefined);
   assert.equal(receiver.image, null);
+});
+
+test("scrolling can cancel a detailed frame without waiting on its acknowledgment", async () => {
+  const relay = new Relay("http://127.0.0.1", true, "", {});
+  relay.ws = { readyState: 1, bufferedAmount: 0 };
+  const peer = {};
+  relay.peers.set(7, peer);
+  const sent = [];
+  relay.send = async (id, type, packet) => {
+    sent.push([type, packet]);
+    relay.cancelImage(id);
+  };
+  await relay.sendImage(7, new Uint8Array(3 * PIECE_BYTES), true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0], 4);
+  assert.equal(peer.sendingImage, false);
 });

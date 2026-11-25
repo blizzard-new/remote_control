@@ -90,6 +90,103 @@ async def visible_phone(page):
 
 
 class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_scrolling_delivers_more_frames_and_restores_full_resolution(self):
+        source = Image.effect_noise((2560, 1600), 67).convert("RGB")
+        draw = ImageDraw.Draw(source)
+        draw.rectangle((0, 0, 780, 1600), fill="#f1f4f9")
+        for y in range(25, 1600, 44):
+            draw.text((32, y), f"{y:04}   Desktop scrolling fixture", fill="#1f3456")
+        images = [ImageChops.offset(source, 0, -i * 27) for i in range(6)]
+        frames = {
+            (edge, sharp): [PrimaryScreen._encode(image.copy(), edge, sharp) for image in images]
+            for edge, sharp in [(3840, True), (1920, False), (1280, False)]
+        }
+        self.assertGreater(len(frames[3840, True][0]), 500000)
+
+        class ScrollingScreen(Screen):
+            position = 0
+
+            async def frame(self, *, edge, sharp):
+                self.position = (self.position + 1) % len(images)
+                return frames[edge, sharp][self.position]
+
+        with TemporaryDirectory() as tmp:
+            desktop_db, device_db = Path(tmp) / "desktop", Path(tmp) / "viewer"
+            native = RecordingDesktop()
+            desktop = create_app("desktop", native, device_store=desktop_db, primary_capture=ScrollingScreen(b""))
+            viewer = create_app("viewer", RecordingDesktop(), device_store=device_db, primary_capture=Screen(b""))
+            async with AsyncExitStack() as stack:
+                relay = await stack.enter_async_context(TestServer(relay_app()))
+                desktop_site = await stack.enter_async_context(TestServer(desktop))
+                viewer_site = await stack.enter_async_context(TestServer(viewer))
+                address = str(relay.make_url("/")).rstrip("/")
+                a, b = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+                update(desktop_db, "save", dict(listen=a, dial=b, name="Controller", address=address, grant="control"))
+                update(device_db, "save", dict(listen=b, dial=a, name="PC", platform="Windows", address=address, grant=""))
+                browser = await launch_browser(stack)
+                laptop = await open_device(browser, desktop_site, address, "PC", "Windows", "desktop")
+                controller = os.environ.get("REMOTE_DESKTOP_PLATFORM", "Android")
+                page = await open_device(browser, viewer_site, address, "Controller", controller, "viewer")
+                await page.evaluate("""() => {
+                    const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+                    window.painted = [];
+                    CanvasRenderingContext2D.prototype.drawImage = function(...args) {
+                        if (this.canvas.id === 'picture') window.painted.push({
+                            width: this.canvas.width,
+                            time: performance.now()
+                        });
+                        return drawImage.apply(this, args);
+                    };
+                }""")
+                await page.locator("#remembered button").first.click()
+                await page.locator("#action-connect").click()
+                canvas = page.locator("#picture")
+                full_width = "() => document.querySelector('#picture').width === 2560"
+                await page.wait_for_function(full_width, timeout=25000)
+                await page.locator("#video-menu summary").click()
+                await page.locator("#smooth-scroll").uncheck()
+                await page.locator("#video-menu summary").click()
+
+                async def scroll():
+                    return await canvas.evaluate("""async (canvas) => {
+                        const rect = canvas.getBoundingClientRect();
+                        const start = performance.now();
+                        const timer = setInterval(() => canvas.dispatchEvent(new WheelEvent('wheel', {
+                            bubbles: true, cancelable: true, deltaY: 54,
+                            clientX: rect.left + rect.width / 2,
+                            clientY: rect.top + rect.height / 2
+                        })), 38);
+                        await new Promise(done => setTimeout(done, 3200));
+                        clearInterval(timer);
+                        return {
+                            widths: painted.filter(p => p.time >= start + 450).map(p => p.width),
+                            stats: document.querySelector('#stats').textContent
+                        };
+                    }""")
+
+                baseline = (await scroll())["widths"]
+                self.assertGreater(len(baseline), 0)
+                self.assertEqual(set(baseline), {2560})
+                await page.locator("#video-menu summary").click()
+                await page.locator("#smooth-scroll").check()
+                await page.locator("#video-menu summary").click()
+                optimized = await scroll()
+                small_frames = [width for width in optimized["widths"] if width < 2560]
+                self.assertGreaterEqual(len(small_frames), max(6, len(baseline) * 2))
+                if os.environ.get("REMOTE_BROWSER", "chromium") == "chromium":
+                    self.assertIn("VP8", optimized["stats"])
+                self.assertFalse(native.wheel.empty())
+                await page.wait_for_function(full_width, timeout=20000)
+                await expect(page.locator("#first-picture")).to_be_hidden()
+                await laptop.evaluate("window.VideoEncoder = undefined")
+                fallback = await scroll()
+                self.assertIn("JPEG", fallback["stats"])
+                self.assertGreaterEqual(fallback["widths"].count(1280), max(6, len(baseline) * 2))
+                await page.wait_for_function(full_width, timeout=20000)
+                print(f"{controller} scrolling: {len(baseline)} full JPEG frames, "
+                      f"{len(small_frames)} optimized frames, {fallback['widths'].count(1280)} "
+                      "adaptive JPEG frames over 2.75s, restored 2560 pixels.")
+
     async def test_phone_switches_monitors_and_clicks_the_visible_screen(self):
         primary = Monitor("main", (0, 0, 640, 360), True)
         hdmi = Monitor("hdmi", (-480, 0, 0, 640))

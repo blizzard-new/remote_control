@@ -42,6 +42,8 @@ Windows 安裝版使用 Microsoft Edge WebView2。第一次開啟後，會在此
 
 延伸桌面連線時，手機工具列會顯示目前的「螢幕 1 / 2」。按一下可在主螢幕和延伸螢幕之間切換，觸控會對應目前顯示的螢幕。拔除延伸螢幕時會自動回到可用螢幕。此功能支援 Windows、macOS 14 以上的安裝版，以及具備 RandR 1.5 的原生 X11。
 
+新版在控制桌面時預設開啟「捲動時優先流暢」。捲動期間會縮小畫面，以 WebRTC、VP8 或較小的 JPEG 傳送，停下後會恢復原本的解析度和畫質。要固定解析度，可到觀看端的「畫面設定」關掉此選項。
+
 ## 在 Linux 啟動
 
 在 Ubuntu／Debian 的 64 位元 x86 系統，下載 `RemoteControl-Linux-amd64.deb` 後以套件管理員開啟，或執行 `sudo apt install ./RemoteControl-Linux-amd64.deb`。從應用程式選單開啟 Uniway Remote 後，瀏覽器會開啟裝置列表，可使用同一套四碼配對和跨網路連線。分享及操作 Linux 整個桌面需要登入 X11 工作階段，例如登入頁面選擇「Ubuntu on Xorg」。Wayland 桌面可使用程式連到其他裝置。 [下載頁](https://github.com/blizzard-new/remote_control/releases/latest)

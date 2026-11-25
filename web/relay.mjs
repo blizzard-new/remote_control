@@ -1,4 +1,4 @@
-import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, imagePiece } from "./video.mjs";
+import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, MOTION_PACKET, MOTION_TYPE, imagePiece } from "./video.mjs";
 // The invitation stays on the two devices. Only its hash identifies a relay room.
 // Each direction has a separate AES-GCM key and an ordered packet counter.
 const utf8 = new TextEncoder();
@@ -228,6 +228,26 @@ export class Relay {
     if (peer && peer.imageSerial === serial) peer.acknowledge?.();
   }
 
+  cancelImage(id) {
+    const peer = this.peers.get(id);
+    if (peer?.sendingImage) {
+      peer.imageCancelled = true;
+      peer.acknowledge?.();
+    }
+  }
+
+  sendMotion(id, packet) {
+    const peer = this.peers.get(id);
+    if (!peer || this.closed || this.ws.readyState !== 1 ||
+        peer.pending > 1 || this.ws.bufferedAmount > MOTION_PACKET ||
+        packet.length > MOTION_PACKET) return false;
+    const now = performance.now();
+    if (now < (this.mediaDue || 0)) return false;
+    this.mediaDue = now + (packet.length + 64) / 3200;
+    this.send(id, MOTION_TYPE, packet);
+    return true;
+  }
+
   async sendImage(id, image, parts) {
     const peer = this.peers.get(id);
     if (
@@ -238,6 +258,7 @@ export class Relay {
     )
       return;
     peer.sendingImage = true;
+    peer.imageCancelled = false;
     const fragmented = image.length > SINGLE_IMAGE;
     let receipt, timer;
     if (fragmented) {
@@ -262,6 +283,7 @@ export class Relay {
         if (due > now) await new Promise((done) => setTimeout(done, due - now));
         while (
           !this.closed &&
+          !peer.imageCancelled &&
           this.peers.get(id) === peer &&
           this.ws.readyState === 1 &&
           this.ws.bufferedAmount > PIECE_BYTES
@@ -270,6 +292,7 @@ export class Relay {
         }
         if (
           this.closed ||
+          peer.imageCancelled ||
           this.peers.get(id) !== peer ||
           this.ws.readyState !== 1
         )
@@ -281,7 +304,7 @@ export class Relay {
         );
       }
       // A slow downstream must finish one large frame before another one is queued.
-      if (fragmented && this.peers.get(id) === peer) {
+      if (fragmented && !peer.imageCancelled && this.peers.get(id) === peer) {
         timer = setTimeout(peer.acknowledge, 25000);
         await receipt;
       }

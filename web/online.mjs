@@ -2,7 +2,10 @@ import {
   EDGES,
   SINGLE_IMAGE,
   MAX_IMAGE,
+  MOTION_TYPE,
   ImageAssembly,
+  MotionEncoder,
+  MotionDecoder,
   sameImage,
 } from "./video.mjs";
 import {
@@ -348,6 +351,7 @@ function closeSession(s, message) {
         true;
     $("stats").textContent = "正在接收畫面";
     $("video-menu").open = false;
+    $("smooth-scroll-option").hidden = true;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     clearTimeout(s.mediaTimer);
     clearInterval(s.statsTimer);
@@ -362,6 +366,8 @@ function closeSession(s, message) {
     p.row?.remove();
     clearTimeout(p.avcTimer);
     p.ws?.close();
+    p.motionEncoder?.stop();
+    p.motionDecoder?.close();
     p.pc?.close();
     clearTimeout(p.timeout);
     clearTimeout(p.retryApproval);
@@ -503,6 +509,8 @@ function peerLeft(s, id) {
     s.hasFrame = false;
   }
   p.pc?.close();
+  p.motionEncoder?.stop();
+  p.motionDecoder?.close();
   p.video?.pause();
   clearTimeout(p.timeout);
   p.row?.remove();
@@ -546,6 +554,7 @@ async function connectRelay(s) {
           t: "request",
           viewOnly: !!s.viewOnly,
           monitorControls: true,
+          desktopVideo: typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function",
           avc: false,
           frameParts: true,
           screenRequest: !!window.PhoneDevices,
@@ -616,6 +625,13 @@ async function connectRelay(s) {
         receiveVideo(s, p, data);
         return;
       }
+      if (type === MOTION_TYPE && !s.host && p.approved && p.scrollAdaptation &&
+          !p.waitingScreen && !p.direct && !p.noMotionVideo) {
+        p.assembly?.reset();
+        p.nextJpeg = null;
+        receiveMotion(s, p, data);
+        return;
+      }
       if (type === 4 && !s.host && p.approved) {
         p.assembly ??= new ImageAssembly();
         const frame = p.assembly.accept(data);
@@ -626,21 +642,8 @@ async function connectRelay(s) {
       }
       if (type === 2) {
         p.assembly?.reset();
-        if (!s.host && p.approved && !p.direct && !p.painting && !p.waitingScreen) {
-          const revision = p.screenRevision;
-          p.painting = true;
-          decodeJpeg(data)
-            .then((image) => {
-              try {
-                if (current(s) && s.peers.has(id) && !p.direct && p.screenRevision === revision)
-                  paint(s, p, image, image.width, image.height, "jpeg");
-              } finally {
-                image.close?.();
-              }
-            })
-            .catch(() => {})
-            .finally(() => (p.painting = false));
-        }
+        if (!s.host && p.approved && !p.direct && !p.waitingScreen)
+          receiveJpeg(s, p, data);
         return;
       }
       if (type !== 1 || data.length > 96000) return;
@@ -735,6 +738,7 @@ async function connectRelay(s) {
           p.profile = profile(m);
           p.frameParts = m.frameParts === true;
           p.supportsScreens = m.monitorControls === true;
+          p.desktopVideo = m.desktopVideo === true;
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
           p.screenRequest =
@@ -749,6 +753,11 @@ async function connectRelay(s) {
         if (!p.approved) return;
         if (m.t === "image-received")
           return s.relay.imageReceived(p.id, m.serial);
+        if (m.t === "motion-fallback") {
+          p.desktopVideo = false;
+          p.motionEncoder?.stop();
+          return;
+        }
         if (m.t === "select-screen" && s.screens.some((screen) => screen.id === m.screen)) {
           selectHostScreen(s, p, m.screen);
           return;
@@ -769,6 +778,8 @@ async function connectRelay(s) {
           (!p.supportsScreens || !p.hasSwitched || m.screen === p.screen) &&
           s.local.readyState === 1
         ) {
+          if (m.event.kind === "wheel" && (Number.isFinite(m.event.dx) && Number.isFinite(m.event.dy)) &&
+              (m.event.dx || m.event.dy)) noteScroll(s, p.screen);
           s.local.send(
             JSON.stringify({ type: "input", id: p.localId, event: m.event, screen: p.screen }),
           );
@@ -812,6 +823,8 @@ async function connectRelay(s) {
         if (!current(s) || s.peers.get(id) !== p) return;
         clearTimeout(p.timeout);
         p.approved = true;
+        p.scrollAdaptation = m.scrollAdaptation === true;
+        $("smooth-scroll-option").hidden = !p.scrollAdaptation;
         p.screen = m.screen || null;
         viewerScreens(s, p, m.screens);
         s.wasApproved = true;
@@ -950,8 +963,7 @@ function paint(s, p, image, w, h, format) {
     s.relay.json(p.id, { t: "quality", ...profile(), avc: true });
     p.avcTimer = setTimeout(() => compatibleVideo(s, p), 5000);
   }
-  s.format =
-    format === "avc" ? "H.264" : format === "direct" ? "WebRTC" : "JPEG";
+  s.format = { avc: "H.264", direct: "WebRTC", jpeg: "JPEG", motion: "VP8" }[format];
   if (!s.painted && !s.reported) {
     $("stats").textContent = `實收 ${w} × ${h} · ${s.format}`;
     s.reported = true;
@@ -1031,6 +1043,7 @@ function request(s, p, name) {
         keyboard: !!s.cap?.keyboard,
         remembered,
         qualityControls: true,
+        scrollAdaptation: true,
         screens: s.screens,
         screen: p.screen,
         name: $("name").value.trim() || defaultName,
@@ -1250,6 +1263,58 @@ function compatibleVideo(s, p) {
   if (p.decoder && p.decoder.state !== "closed") p.decoder.close();
   s.relay.json(p.id, { t: "quality", ...profile(), avc: false });
 }
+function endMotionDecoding(p) {
+  p.motionDecoder?.close();
+  p.motionDecoder = null;
+}
+function receiveMotion(s, p, packet) {
+  const fallback = () => {
+    if (p.noMotionVideo || !current(s) || s.peers.get(p.id) !== p) return;
+    endMotionDecoding(p);
+    p.noMotionVideo = true;
+    s.relay.json(p.id, { t: "motion-fallback" });
+  };
+  try {
+    if (!p.motionDecoder) {
+      const motion = new MotionDecoder((frame) => {
+        if (current(s) && s.peers.get(p.id) === p && p.motionDecoder === motion &&
+            !p.waitingScreen && !p.direct)
+          paint(s, p, frame, frame.displayWidth, frame.displayHeight, "motion");
+      }, fallback);
+      p.motionDecoder = motion;
+    }
+    p.motionDecoder.accept(packet);
+  } catch {
+    fallback();
+  }
+}
+async function receiveJpeg(s, p, data) {
+  endMotionDecoding(p);
+  if (p.painting) {
+    // Keep the newest complete frame while an image is being decoded.
+    p.nextJpeg = data;
+    return;
+  }
+  p.painting = true;
+  const revision = p.screenRevision;
+  let image;
+  try {
+    image = await decodeJpeg(data);
+    if (current(s) && s.peers.get(p.id) === p && !p.direct &&
+        !p.waitingScreen && !p.motionDecoder && p.screenRevision === revision)
+      paint(s, p, image, image.width, image.height, "jpeg");
+  } catch {
+    // A damaged image does not affect subsequent independently encoded frames.
+  } finally {
+    image?.close?.();
+    p.painting = false;
+    const next = p.nextJpeg;
+    p.nextJpeg = null;
+    if (next && current(s) && s.peers.get(p.id) === p && !p.direct && !p.waitingScreen)
+      receiveJpeg(s, p, next);
+  }
+}
+
 function receiveVideo(s, p, bytes) {
   const fallback = () => compatibleVideo(s, p);
   if (bytes.length <= 9 || bytes[0] > 1 || typeof VideoDecoder !== "function")
@@ -1323,8 +1388,16 @@ function profile(values) {
     edge: EDGES.includes(edge) ? edge : 1920,
     sharp,
     fps: fps === 60 ? 60 : 30,
+    smooth: values ? values.smooth === true : $("smooth-scroll").checked,
   };
 }
+$("smooth-scroll").checked = localStorage.getItem("rc-video-smooth") !== "off";
+$("smooth-scroll").onchange = () => {
+  localStorage.setItem("rc-video-smooth", $("smooth-scroll").checked ? "on" : "off");
+  for (const peer of viewerSession?.peers.values() || [])
+    if (peer.approved && peer.scrollAdaptation)
+      viewerSession.relay.json(peer.id, { t: "quality", ...profile() });
+};
 for (const [id, key, defaultValue] of [
   ["quality", "edge", 3840],
   ["detail-quality", "detail", "sharp"],
@@ -1352,15 +1425,16 @@ for (const [id, key, defaultValue] of [
 }
 async function tuneSender(s, p) {
   if (!p.sender || !p.profile || !s.hasFrame || p.tuning) return;
-  const { edge, fps, sharp } = p.profile,
+  const { edge, fps, sharp, scrolling } = captureProfile(s, p),
     size = Math.max(s.source.width, s.source.height);
-  const key = [edge, fps, sharp, size].join("/");
+  const key = [edge, fps, sharp, size, scrolling].join("/");
   if (p.tuned === key) return;
   try {
     p.tuning = true;
     const params = p.sender.getParameters();
     if (!params.encodings?.length) return;
-    params.degradationPreference = sharp ? "maintain-resolution" : "balanced";
+    params.degradationPreference = scrolling ? "maintain-framerate" :
+      sharp ? "maintain-resolution" : "balanced";
     Object.assign(params.encodings[0], {
       maxFramerate: fps,
       scaleResolutionDownBy: Math.max(1, size / edge),
@@ -1383,6 +1457,33 @@ async function tuneSender(s, p) {
     p.tuning = false;
   }
 }
+function noteScroll(s, screen) {
+  const now = performance.now();
+  s.scrollTimes ??= new Map();
+  const starting = (s.scrollTimes.get(screen) ?? 0) <= now;
+  s.scrollTimes.set(screen, now + 450);
+  if (!starting) return;
+  for (const p of s.peers.values()) {
+    if (!p.approved || p.screen !== screen || !p.profile?.smooth) continue;
+    p.nextFrame = 0;
+    p.lastImage = null;
+    s.relay.cancelImage(p.id);
+  }
+}
+function captureProfile(s, p) {
+  const settings = p.profile || { edge: 1920, fps: 30, sharp: false };
+  if (!settings.smooth || !(s.scrollTimes?.get(p.screen) > performance.now()))
+    return settings;
+  const motionVideo = p.desktopVideo && !p.motionEncoder?.failed &&
+    typeof VideoEncoder === "function" && typeof VideoFrame === "function";
+  return {
+    ...settings,
+    edge: Math.min(settings.edge, p.direct || motionVideo ? 1920 : 1280),
+    sharp: false,
+    scrolling: true,
+    motionVideo,
+  };
+}
 function nextFrame(s) {
   const peers = [...s.peers.values()].filter((p) => p.approved && !p.ending);
   if (!current(s) || !peers.length || s.reading || s.local.readyState !== 1)
@@ -1392,15 +1493,15 @@ function nextFrame(s) {
   const active = (s.screenCursor || 0) % screens.length;
   s.screenCursor = active + 1;
   s.captureScreen = screens[active];
-  const viewers = peers.filter((p) => p.screen === s.captureScreen);
-  s.captureEdge = Math.max(...viewers.map((p) => p.profile?.edge || 1920));
-  s.captureSharp = viewers.some((p) => p.profile?.sharp);
+  const settings = peers.filter((p) => p.screen === s.captureScreen).map((p) => captureProfile(s, p));
+  s.captureEdge = Math.max(...settings.map((p) => p.edge));
+  s.captureSharp = settings.some((p) => p.sharp);
   s.local.send(
     JSON.stringify({
       type: "primary-frame",
       edge: s.captureEdge,
       sharp: s.captureSharp,
-      fps: Math.min(60, screens.length * Math.max(...viewers.map((p) => p.profile?.fps || 30))),
+      fps: Math.min(60, screens.length * Math.max(...settings.map((p) => p.fps))),
       screen: s.captureScreen,
     }),
   );
@@ -1429,6 +1530,8 @@ function viewerScreens(s, p, screens) {
   };
 }
 function waitForScreen(s, p, screen) {
+  endMotionDecoding(p);
+  p.nextJpeg = null;
   p.waitingScreen = true;
   p.requestedScreen = screen;
   p.screenRevision = (p.screenRevision || 0) + 1;
@@ -1442,6 +1545,8 @@ function selectHostScreen(s, p, screen) {
   if (p.control)
     s.local.send(JSON.stringify({ type: "input", id: p.localId, event: { kind: "release" } }));
   p.screen = screen;
+  p.motionEncoder?.stop();
+  s.relay.cancelImage(p.id);
   p.hasSwitched = true;
   p.pendingScreen = true;
   p.lastImage = null;
@@ -1485,13 +1590,16 @@ function startCapture(s) {
       for (const p of s.peers.values()) {
         if (!p.approved || p.screen !== s.captureScreen) continue;
         tuneSender(s, p);
+        const { edge, fps, sharp, scrolling, motionVideo } = captureProfile(s, p);
+        if (!motionVideo || p.direct || p.pendingScreen) p.motionEncoder?.stop();
         if (p.direct || p.sendingImage || now < (p.nextFrame || 0)) continue;
-        const { edge, fps, sharp } = p.profile || {
-          edge: 1920,
-          fps: 30,
-          sharp: false,
-        };
-        const limit = p.frameParts ? MAX_IMAGE : SINGLE_IMAGE;
+        p.nextFrame = now + 1000 / fps - 1;
+        if (motionVideo && !p.pendingScreen) {
+          p.motionEncoder ??= new MotionEncoder((packet) =>
+            current(s) && s.peers.get(p.id) === p && s.relay.sendMotion(p.id, packet));
+          if (p.motionEncoder.submit(image, edge, fps)) continue;
+        }
+        const limit = scrolling ? 120000 : p.frameParts ? MAX_IMAGE : SINGLE_IMAGE;
         const key = [edge, sharp, limit].join("/");
         let jpeg = encoded.get(key);
         if (!jpeg) {
@@ -1508,7 +1616,7 @@ function startCapture(s) {
             fallback
               .getContext("2d")
               .drawImage(image, 0, 0, fallback.width, fallback.height);
-            const levels = p.frameParts
+            const levels = scrolling ? [0.72, 0.55, 0.40, 0.25] : p.frameParts
               ? sharp
                 ? [0.95, 0.88, 0.78]
                 : [0.8, 0.72]
@@ -1528,7 +1636,6 @@ function startCapture(s) {
         }
         if (!current(s) || s.peers.get(p.id) !== p) continue;
         if (p.screen !== s.captureScreen) continue;
-        p.nextFrame = now + 1000 / fps - 1;
         if (now - p.lastImageAt < 2000 && sameImage(p.lastImage, jpeg))
           continue;
         p.lastImage = jpeg;

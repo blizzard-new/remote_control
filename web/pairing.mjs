@@ -383,6 +383,14 @@ export class HostChannels {
     const r = this.routes.get(id);
     r?.relay.imageReceived(r.remote, serial);
   }
+  cancelImage(id) {
+    const r = this.routes.get(id);
+    r?.relay.cancelImage(r.remote);
+  }
+  sendMotion(id, packet) {
+    const r = this.routes.get(id);
+    return r?.relay.sendMotion(r.remote, packet);
+  }
   sendImage(id, image, parts) {
     const r = this.routes.get(id);
     return r?.relay.sendImage(r.remote, image, parts);
