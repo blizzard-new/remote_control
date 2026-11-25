@@ -1,0 +1,49 @@
+name: Attach verified 0.5.6 downloads
+
+on:
+  push:
+    branches: [release-assets/v0.5.6]
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/release-assets/v0.5.6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_ID: '45536067326'
+      SOURCE_SHA: 9c1cfb4fe44e1272475a26a72b38651448f75def
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build and draft target
+        run: |
+          gh run watch "$BUILD_ID" --interval 15 --exit-status
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.conclusion == "success" and .head_sha == $sha'
+          gh release view v0.5.6 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 45536067326
+          github-token: ${{ github.token }}
+          path: build-artifacts
+      - name: Assemble and checksum downloads
+        run: |
+          mkdir downloads
+          cp build-artifacts/Windows-desktop-host/RemoteControlHost.exe downloads/RemoteControl-Windows-x64.exe
+          cp build-artifacts/Mac-host-macos-15/RemoteControl-macOS-arm64.zip downloads/
+          cp build-artifacts/Mac-host-macos-15-intel/RemoteControl-macOS-x86_64.zip downloads/
+          cp build-artifacts/Windows-desktop-host/RemoteControl-Setup-Windows-x64.exe downloads/
+          cp build-artifacts/Mac-host-macos-15/RemoteControl-macOS-arm64.pkg downloads/
+          cp build-artifacts/Mac-host-macos-15-intel/RemoteControl-macOS-x86_64.pkg downloads/
+          cp build-artifacts/Linux-desktop-host/RemoteControl-Linux-amd64.deb downloads/
+          cp packaging/release/RemoteControl-Android.apk downloads/
+          cd downloads
+          gh release download v0.5.5 -p RemoteControl-Server-Windows.zip
+          sha256sum --check <<'SUMS'
+          60c0f05a2a368ad524ef5f426c098d99a83682f4695a03b47e3420a6394a9b0a  RemoteControl-Android.apk
+          8eb76853034c37604f13d8ae9fc657de4503be1c5f365cb954554c5c5ac22c2d  RemoteControl-Server-Windows.zip
+          SUMS
+          sha256sum RemoteControl* > SHA256SUMS.txt
+          gh release upload v0.5.6 RemoteControl* SHA256SUMS.txt
