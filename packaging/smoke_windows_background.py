@@ -6,6 +6,7 @@ import ctypes as ct
 from ctypes import wintypes as wt
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import winreg
@@ -79,7 +80,6 @@ async def smoke(executable):
                 await asyncio.sleep(.35)
             raise RuntimeError("No packaged WebView2 dashboard or no active four-digit code")
 
-        import re
         r_pin = re.compile(r"^\d{4}$")
         try:
             proc = subprocess.Popen([str(executable)], env=env)

@@ -20,4 +20,6 @@ Depends: libc6 (>= 2.35), libx11-6, libxcb1, libxtst6, libxrandr2, x11-xkb-utils
 Description: Uniway Remote cross-network desktop client
  Share and control an X11 desktop or connect to paired desktops and Android devices.
 EOF
+chmod 0644 "$stage/DEBIAN/control"
+find "$stage" -type d -exec chmod 0755 {} +
 dpkg-deb --root-owner-group --build "$stage" dist/RemoteControl-Linux-amd64.deb
