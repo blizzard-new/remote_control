@@ -14,6 +14,7 @@ import winreg
 from aiohttp.test_utils import TestServer
 from playwright.async_api import async_playwright, expect
 
+from native.desktop import Desktop
 from native.windows_app import RUN_KEY
 from relay.__main__ import create_app
 from server.app import create_app as desktop_app
@@ -60,7 +61,7 @@ async def smoke(executable):
         relay = await stack.enter_async_context(TestServer(create_app()))
         address = str(relay.make_url("/")).rstrip("/")
         env = dict(os.environ, REMOTE_RELAY_URL=address)
-        handset = await stack.enter_async_context(TestServer(desktop_app("", None)))
+        handset = await stack.enter_async_context(TestServer(desktop_app("", Desktop())))
         playwright = await stack.enter_async_context(async_playwright())
         phone_browser = await playwright.chromium.launch()
         stack.push_async_callback(phone_browser.close)
@@ -91,7 +92,8 @@ async def smoke(executable):
 
             user = ct.WinDLL("user32")
             user.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
-            assert user.PostMessageW(handle, 0x0010, 0, 0)  # WM_CLOSE
+            # The title bar's X sends SC_CLOSE. A bare WM_CLOSE is treated as Task Manager closing.
+            assert user.PostMessageW(handle, 0x0112, 0xF060, 0)  # WM_SYSCOMMAND / SC_CLOSE
             await window_is(False)
             assert proc.poll() is None
             await expect(phone.locator("#stage")).to_be_visible()
