@@ -1,4 +1,4 @@
-"""Win32 SendInput adapter for a single interactive monitor."""
+"""Win32 capture geometry and SendInput for the interactive desktop."""
 
 import ctypes as ct
 import math
@@ -6,6 +6,38 @@ import sys
 from pathlib import Path
 
 from ctypes import wintypes as wt
+from .monitors import Monitor
+
+
+class MonitorInfo(ct.Structure):
+    _fields_ = [("size", wt.DWORD), ("rect", wt.RECT), ("work", wt.RECT),
+                ("flags", wt.DWORD), ("name", wt.WCHAR * 32)]
+
+
+def windows_monitors():
+    user = ct.WinDLL("user32", use_last_error=True)
+    if hasattr(user, "SetThreadDpiAwarenessContext"):
+        user.SetThreadDpiAwarenessContext.argtypes = [ct.c_void_p]
+        user.SetThreadDpiAwarenessContext.restype = ct.c_void_p
+        user.SetThreadDpiAwarenessContext(ct.c_void_p(-4))
+    callback = ct.WINFUNCTYPE(wt.BOOL, wt.HMONITOR, wt.HDC, ct.POINTER(wt.RECT), wt.LPARAM)
+    user.GetMonitorInfoW.argtypes = [wt.HMONITOR, ct.POINTER(MonitorInfo)]
+    user.EnumDisplayMonitors.argtypes = [wt.HDC, ct.POINTER(wt.RECT), callback, wt.LPARAM]
+    found = []
+
+    @callback
+    def add(handle, _dc, _rect, _data):
+        info = MonitorInfo()
+        info.size = ct.sizeof(info)
+        if user.GetMonitorInfoW(handle, ct.byref(info)):
+            r = info.rect
+            found.append(Monitor(info.name.rsplit("\\", 1)[-1], (r.left, r.top, r.right, r.bottom),
+                                 bool(info.flags & 1)))
+        return True
+
+    if not user.EnumDisplayMonitors(None, None, add, 0):
+        return []
+    return sorted(found, key=lambda monitor: (not monitor.primary, monitor.id))
 
 
 # PC keyboard scan codes. Extended keys have the E0 prefix encoded as bit 8.
@@ -120,10 +152,19 @@ class WindowsBackend:
             self._mouse(0x1000 if axis == 0 else 0x0800, notches * (120 if axis == 0 else -120))
         self._wheel_pixels[axis] = total - notches * 48
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         kind = event["kind"]
         if kind in ("move", "button", "wheel") and "x" in event:
-            self._mouse(0x8001, x=round(event["x"] * 65535), y=round(event["y"] * 65535))
+            if monitor is None:
+                self._mouse(0x8001, x=round(event["x"] * 65535), y=round(event["y"] * 65535))
+            else:
+                x, y = monitor.position(event["x"], event["y"])
+                left, top, width, height = (self.user.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+                if width <= 0 or height <= 0:
+                    raise RuntimeError("無法讀取 Windows 桌面座標")
+                # SendInput maps each normalized axis into the entire virtual desktop.
+                self._mouse(0xC001, x=min(65535, ((x-left) * 65536 + width-1) // width),
+                            y=min(65535, ((y-top) * 65536 + height-1) // height))
         if kind == "button":
             self._button(event["button"], event["down"])
         elif kind == "text":

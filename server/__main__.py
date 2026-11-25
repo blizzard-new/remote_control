@@ -27,7 +27,7 @@ def ice_configuration(raw):
     return servers
 
 
-def main(argv=None, *, on_ready=None, online_socket=None):
+def main(argv=None, *, on_ready=None, online_socket=None, handle_signals=True):
     parser = argparse.ArgumentParser(description="Start a remote desktop session on this computer.")
     parser.add_argument("--bind", default="127.0.0.1", help="loopback address, or 0.0.0.0/:: for other devices")
     parser.add_argument("--port", type=int, default=8443)
@@ -69,7 +69,7 @@ def main(argv=None, *, on_ready=None, online_socket=None):
     installer = asset_name() if online_socket is not None else None
     app = create_app(token, desktop, ice, device_store=device_store() if online_socket is not None else None,
                      updater=DesktopUpdates(installer) if installer else None,
-                     primary_capture=PrimaryScreen() if online_socket is not None else None)
+                     primary_capture=PrimaryScreen(desktop) if online_socket is not None else None)
     domain = "localhost" if args.bind in {"0.0.0.0", "::", "localhost", "127.0.0.1", "::1"} else args.bind
     if ":" in domain:
         domain = f"[{domain}]"
@@ -87,7 +87,7 @@ def main(argv=None, *, on_ready=None, online_socket=None):
         if on_ready:
             on_ready(url)
 
-    web.run_app(app, **listen, ssl_context=context, access_log=None, print=announce)
+    web.run_app(app, **listen, ssl_context=context, access_log=None, print=announce, handle_signals=handle_signals)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock
 
 from native.desktop import Desktop, validate_event
+from native.monitors import Monitor
 from native.windows import Input, WindowsBackend
 
 
@@ -78,6 +79,16 @@ class NativeInputTests(unittest.TestCase):
 
     def test_win32_input_size(self):
         self.assertEqual(ctypes.sizeof(Input), 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
+
+    def test_windows_pointer_targets_left_monitor_in_virtual_desktop(self):
+        self.native.user = Mock()
+        self.native.user.GetSystemMetrics.side_effect = {76: -1280, 77: 0, 78: 3200, 79: 1080}.__getitem__
+        hdmi = Monitor("DISPLAY2", (-1280, 0, 0, 720))
+        self.native.apply({"kind": "move", "x": 0, "y": 0}, hdmi)
+        self.native.apply({"kind": "move", "x": 1, "y": 1}, hdmi)
+        first, second = [record.data.mouse for record in self.records]
+        self.assertEqual((first.flags, first.dx, first.dy), (0xC001, 0, 0))
+        self.assertEqual((second.dx * 3200 // 65536, second.dy * 1080 // 65536), (1279, 719))
 
     @unittest.skipUnless(sys.platform == "win32", "Windows ABI")
     def test_win32_overlay_layout(self):

@@ -67,6 +67,7 @@ class Room:
         self.ice_servers = ice_servers
         self.last_capture = 0.0
         self.primary_capture = primary_capture
+        self.monitors = {}
         self.frame_task = None
         self.host = None
         self.code = None
@@ -152,11 +153,22 @@ class Room:
                 reason = str(exc)
         await send(host, "privacy", enabled=self.privacy, **({"error": reason} if reason else {}))
 
-    async def capture_frame(self, host, fps, edge, sharp):
+    def display_state(self):
+        try:
+            monitors = self.primary_capture.displays() if hasattr(self.primary_capture, "displays") else []
+        except (OSError, RuntimeError):
+            monitors = []
+        self.monitors = {monitor.id: monitor for monitor in monitors}
+        return [{"id": monitor.id, "primary": monitor.primary} for monitor in monitors]
+
+    async def capture_frame(self, host, fps, edge, sharp, monitor):
         try:
             await asyncio.sleep(max(0, self.last_capture + 1/fps - monotonic()))
             self.last_capture = monotonic()
-            data = await self.primary_capture.frame(edge=edge, sharp=sharp)
+            profile = {"edge": edge, "sharp": sharp}
+            if monitor is not None:
+                profile["monitor"] = monitor
+            data = await self.primary_capture.frame(**profile)
             if host is self.host and any(p.approved for p in self.peers.values()):
                 await host.send_bytes(data)
         except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
@@ -185,7 +197,7 @@ class Room:
         host = self.host
         kind = message.get("type")
         if kind == "capabilities":
-            return await send(host, "capabilities", capabilities=self.desktop.capabilities)
+            return await send(host, "capabilities", capabilities=self.desktop.capabilities, screens=self.display_state())
         if kind == "primary-frame":
             if self.primary_capture and any(p.approved for p in self.peers.values()):
                 if self.frame_task is None or self.frame_task.done():
@@ -193,7 +205,11 @@ class Room:
                     if edge not in (960, 1280, 1920, 2560, 3840):
                         edge = 1920
                     fps = 60 if message.get("fps") == 60 else 30
-                    self.frame_task = asyncio.create_task(self.capture_frame(host, fps, int(edge), message.get("sharp") is True))
+                    screen = message.get("screen")
+                    monitor = self.monitors.get(screen) if isinstance(screen, str) else None
+                    if screen is not None and monitor is None:
+                        return await send(host, "screen-changed", screens=self.display_state())
+                    self.frame_task = asyncio.create_task(self.capture_frame(host, fps, int(edge), message.get("sharp") is True, monitor))
             return
         if kind == "privacy":
             return await self.privacy_request(message)
@@ -220,7 +236,13 @@ class Room:
         elif kind == "input" and peer.control and isinstance(message.get("event"), dict):
             try:
                 event = message["event"]
-                self.desktop.apply(event)
+                screen = message.get("screen")
+                if screen is None:
+                    self.desktop.apply(event)
+                elif isinstance(screen, str) and screen in self.monitors:
+                    self.desktop.apply(event, self.monitors[screen])
+                else:
+                    return
                 serial = event.get("tap")
                 if (event.get("kind") == "button" and event.get("down") is False and type(serial) is int
                         and 0 < serial <= 2147483647 and self.desktop.capabilities.get("keyboard")):
@@ -274,7 +296,8 @@ class Room:
                 self.host = socket
                 self.code = secrets.token_urlsafe(12)
                 await send(socket, "hosted", code=self.code, capabilities=self.desktop.capabilities,
-                           iceServers=self.ice_servers, primaryCapture=self.primary_capture is not None)
+                           iceServers=self.ice_servers, primaryCapture=self.primary_capture is not None,
+                           screens=self.display_state())
             elif (message.get("type") == "join" and self.host is not None and
                   matches(message.get("code"), self.code) and len(self.peers) < MAX_PEERS):
                 name = message.get("name")

@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]
+        os: [ubuntu-22.04, windows-latest, macos-15, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb libxtst6 libxrandr2 x11-xkb-utils
       - if: runner.os == 'Windows'
-        run: python -m pip install windows-capture==2.0.1
+        run: python -m pip install windows-capture==2.0.1 pywebview==5.4 pystray==0.19.5
       - run: python -m unittest discover -s tests -v
         env:
           REMOTE_TEST_WINDOWS_CURTAIN: ${{ runner.os == 'Windows' && '1' || '0' }}
@@ -62,12 +62,34 @@ jobs:
           python packaging/smoke_windows.py dist/RemoteControlHost.exe
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging/RemoteControl.iss
       - if: runner.os == 'Windows'
+        name: Check Windows close and background relaunch
+        timeout-minutes: 5
+        run: |
+          python -m pip install playwright
+          python -m playwright install chromium
+          python -m packaging.smoke_windows_background dist/RemoteControlHost.exe
+      - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: Windows-desktop-host
           path: |
             dist/RemoteControlHost.exe
             dist/RemoteControl-Setup-Windows-x64.exe
+          if-no-files-found: error
+
+      - if: runner.os == 'Linux'
+        name: Package and verify the Linux client
+        run: |
+          python -m pip install "pyinstaller>=6.12,<7"
+          python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
+          bash packaging/linux/build-deb.sh
+          sudo apt-get install -y ./dist/RemoteControl-Linux-amd64.deb
+          python packaging/smoke_windows.py /usr/bin/uniway-remote
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Linux-desktop-host
+          path: dist/RemoteControl-Linux-amd64.deb
           if-no-files-found: error
 
       - if: runner.os == 'macOS'
@@ -80,7 +102,7 @@ jobs:
           python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
           python -c "import ctypes; lib=ctypes.CDLL('dist/RemoteControl.app/Contents/Frameworks/libRemoteControlDisplay.dylib'); assert lib.rc_capture_jpeg_for_profile and lib.rc_capture_jpeg and lib.rc_free_image and lib.rc_focused_editable"
           codesign --verify --deep --strict dist/RemoteControl.app
-          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.5 "RemoteControl-macOS-$(uname -m).pkg"
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.6 "RemoteControl-macOS-$(uname -m).pkg"
           ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

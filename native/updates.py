@@ -16,7 +16,7 @@ from urllib.request import build_opener, HTTPSHandler, HTTPRedirectHandler, Requ
 
 import certifi
 
-VERSION = "0.5.5"
+VERSION = "0.5.6"
 REPOSITORY = "blizzard-new/remote_control"
 LATEST = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 MAX_SIZE = 160 * 1024 * 1024
@@ -27,6 +27,8 @@ def asset_name():
         return "RemoteControl-Setup-Windows-x64.exe"
     if sys.platform == "darwin" and platform.machine() in {"arm64", "x86_64"}:
         return f"RemoteControl-macOS-{platform.machine()}.pkg"
+    if getattr(sys, "frozen", False) and sys.platform.startswith("linux") and platform.machine() == "x86_64":
+        return "RemoteControl-Linux-amd64.deb"
     return None
 
 
@@ -122,6 +124,9 @@ class DesktopUpdates:
                 raise ValueError("請先結束遠端連線，再安裝更新。")
             if sys.platform == "win32":
                 os.startfile(str(path))
+            elif sys.platform.startswith("linux"):
+                from .linux import open_desktop_file
+                open_desktop_file(path)
             else:
                 subprocess.Popen(["/usr/bin/open", "-a", "Installer", str(path)])
             self.offer = None

@@ -20,7 +20,11 @@ const suppliedToken = params.get("host");
 const reload = performance.getEntriesByType("navigation")[0]?.type === "reload";
 const token =
   suppliedToken || (reload && sessionStorage.getItem("rc-host-token"));
-if (suppliedToken) sessionStorage.setItem("rc-host-token", suppliedToken);
+if (suppliedToken) {
+  sessionStorage.setItem("rc-host-token", suppliedToken);
+  sessionStorage.setItem("rc-managed-host", params.get("managed") || "");
+}
+const managedHost = token && sessionStorage.getItem("rc-managed-host") === "1";
 if (location.hash) history.replaceState(null, "", location.pathname);
 $("hostbox").hidden = !token;
 if (token) $("lan").href = "/#host=" + encodeURIComponent(token);
@@ -29,6 +33,8 @@ const canvas = $("picture"),
   ctx = canvas.getContext("2d");
 let hostSession = null;
 let viewerSession = null;
+let hostRetry = null;
+let hostFailures = 0;
 function current(s) {
   return s === (s.host ? hostSession : viewerSession);
 }
@@ -319,6 +325,10 @@ function closeSession(s, message) {
     $("start").hidden = false;
     $("invite").value = "";
     $("devices").replaceChildren();
+    if (managedHost && !s.stopped) {
+      const delay = Math.min(30000, 1000 * 2 ** Math.min(hostFailures++, 5));
+      hostRetry = setTimeout(standby, delay);
+    }
   } else {
     keyboard(false);
     viewerSession = null;
@@ -331,6 +341,7 @@ function closeSession(s, message) {
     $("joinbox").hidden = false;
     $("connect").disabled = false;
     $("ask-control").hidden =
+      $("switch-display").hidden =
       $("view-mode").hidden =
       $("share-request").hidden =
         true;
@@ -342,6 +353,7 @@ function closeSession(s, message) {
     s.detach?.();
   }
   s.abort.abort();
+  clearInterval(s.screenPoll);
   s.relay?.close();
   s.local?.close();
   s.stream?.getTracks().forEach((t) => t.stop());
@@ -508,16 +520,19 @@ async function connectRelay(s) {
       $("invitation").hidden = true;
       $("invite").value = "";
       renderConnections();
-      say("正在重新連接配對服務，請保持這個分頁開啟。");
+      say(managedHost ? "正在重新連接配對服務…" : "正在重新連接配對服務，請保持這個分頁開啟。");
     },
     ready(code) {
       if (!current(s)) return;
       clearTimeout(s.deadline);
+      hostFailures = 0;
       s.ready = true;
       renderConnections();
       $("invitation").hidden = false;
       $("invite").value = code;
-      say("請保持此分頁開啟。新裝置可輸入四碼，已配對裝置可直接重連。");
+      say(managedHost
+        ? "關閉視窗後會繼續待命。新裝置可輸入四碼，已配對裝置可直接重連。"
+        : "請保持此分頁開啟。新裝置可輸入四碼，已配對裝置可直接重連。");
     },
     paired(id, pair) {
       if (!current(s)) return;
@@ -529,6 +544,7 @@ async function connectRelay(s) {
         s.relay.json(id, {
           t: "request",
           viewOnly: !!s.viewOnly,
+          monitorControls: true,
           avc: false,
           frameParts: true,
           screenRequest: !!window.PhoneDevices,
@@ -581,7 +597,7 @@ async function connectRelay(s) {
           s,
           s.pair.platform === "Android"
             ? "手機尚未開放分享。請在手機點「我的手機連線碼」→「開放整個螢幕連線」，再從裝置列表連線。"
-            : "配對服務找不到這台裝置。請喚醒對方，開啟 Uniway Remote 並保持主機分頁顯示「等候連線」，再按遠端控制。若對方已重新安裝，可使用目前顯示的四碼配對。",
+            : "配對服務找不到這台裝置。請確認對方電腦已喚醒並登入，且 Uniway Remote 正在待命。若對方已重新安裝，可使用目前顯示的四碼配對。",
         );
         $("pair-again").hidden = false;
       } else
@@ -609,12 +625,13 @@ async function connectRelay(s) {
       }
       if (type === 2) {
         p.assembly?.reset();
-        if (!s.host && p.approved && !p.direct && !p.painting) {
+        if (!s.host && p.approved && !p.direct && !p.painting && !p.waitingScreen) {
+          const revision = p.screenRevision;
           p.painting = true;
           decodeJpeg(data)
             .then((image) => {
               try {
-                if (current(s) && s.peers.has(id) && !p.direct)
+                if (current(s) && s.peers.has(id) && !p.direct && p.screenRevision === revision)
                   paint(s, p, image, image.width, image.height, "jpeg");
               } finally {
                 image.close?.();
@@ -716,6 +733,7 @@ async function connectRelay(s) {
           }
           p.profile = profile(m);
           p.frameParts = m.frameParts === true;
+          p.supportsScreens = m.monitorControls === true;
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
           p.screenRequest =
@@ -730,6 +748,10 @@ async function connectRelay(s) {
         if (!p.approved) return;
         if (m.t === "image-received")
           return s.relay.imageReceived(p.id, m.serial);
+        if (m.t === "select-screen" && s.screens.some((screen) => screen.id === m.screen)) {
+          selectHostScreen(s, p, m.screen);
+          return;
+        }
         if (m.t === "quality") {
           p.lastImage = null;
           p.profile = profile(m);
@@ -742,10 +764,12 @@ async function connectRelay(s) {
           s.hasFrame &&
           eligible(s) &&
           m.event &&
+          !p.pendingScreen &&
+          (!p.supportsScreens || !p.hasSwitched || m.screen === p.screen) &&
           s.local.readyState === 1
         ) {
           s.local.send(
-            JSON.stringify({ type: "input", id: p.localId, event: m.event }),
+            JSON.stringify({ type: "input", id: p.localId, event: m.event, screen: p.screen }),
           );
         } else if (m.t === "answer" && p.pc) {
           await p.pc.setRemoteDescription(m.sdp);
@@ -787,6 +811,8 @@ async function connectRelay(s) {
         if (!current(s) || s.peers.get(id) !== p) return;
         clearTimeout(p.timeout);
         p.approved = true;
+        p.screen = m.screen || null;
+        viewerScreens(s, p, m.screens);
         s.wasApproved = true;
         p.control = m.control === true && !s.viewOnly;
         $("quality-compat").hidden = m.qualityControls === true;
@@ -823,7 +849,8 @@ async function connectRelay(s) {
         );
         if (p.control) {
           s.sendInput = (event) => {
-            if (s.hasPicture) s.relay.json(id, { t: "input", event });
+            if (s.hasPicture && !s.switchingScreen)
+              s.relay.json(id, { t: "input", event, screen: p.screen });
           };
           $("keyboard-button").hidden = !m.keyboard;
           s.detach = attachInput(
@@ -834,6 +861,14 @@ async function connectRelay(s) {
             },
             { detectText: m.keyboard === true },
           );
+        }
+      } else if (p.approved && m.t === "desktop-screens") {
+        viewerScreens(s, p, m.screens);
+      } else if (p.approved && m.t === "screen-active") {
+        if (!p.waitingScreen || p.requestedScreen === m.screen) {
+          p.screen = m.screen;
+          p.waitingScreen = false;
+          viewerScreens(s, p, p.screens);
         }
       } else if (!s.host && p.approved && m.t === "offer") {
         await direct(s, p, m.sdp).catch(() => {
@@ -881,6 +916,11 @@ function paint(s, p, image, w, h, format) {
     canvas.height = h;
   }
   ctx.drawImage(image, 0, 0, w, h);
+  if (s.switchingScreen) {
+    s.switchingScreen = false;
+    $("first-picture").hidden = true;
+    $("switch-display").disabled = false;
+  }
   if (!s.hasPicture) {
     s.hasPicture = true;
     clearTimeout(s.mediaTimer);
@@ -957,6 +997,7 @@ function request(s, p, name) {
       p.control = m.control;
       p.claiming = false;
       p.approved = true;
+      p.screen = s.screens[0]?.id || null;
       renderConnections();
       renderRequest(s, p);
       let remembered = !!p.pair?.saved;
@@ -989,6 +1030,8 @@ function request(s, p, name) {
         keyboard: !!s.cap?.keyboard,
         remembered,
         qualityControls: true,
+        screens: s.screens,
+        screen: p.screen,
         name: $("name").value.trim() || defaultName,
         platform,
       });
@@ -1121,7 +1164,8 @@ function renderRequest(s, p) {
   placeHostRequests();
 }
 async function direct(s, p, offer) {
-  if (typeof RTCPeerConnection === "undefined" || p.pc || (s.host && !s.stream))
+  if (typeof RTCPeerConnection === "undefined" || p.pc ||
+      (s.host && (!s.stream || s.screens.length > 1)))
     return;
   const pc = (p.pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -1343,16 +1387,79 @@ function nextFrame(s) {
   if (!current(s) || !peers.length || s.reading || s.local.readyState !== 1)
     return;
   s.reading = true;
-  s.captureEdge = Math.max(...peers.map((p) => p.profile?.edge || 1920));
-  s.captureSharp = peers.some((p) => p.profile?.sharp);
+  const screens = [...new Set(peers.map((p) => p.screen))];
+  const active = (s.screenCursor || 0) % screens.length;
+  s.screenCursor = active + 1;
+  s.captureScreen = screens[active];
+  const viewers = peers.filter((p) => p.screen === s.captureScreen);
+  s.captureEdge = Math.max(...viewers.map((p) => p.profile?.edge || 1920));
+  s.captureSharp = viewers.some((p) => p.profile?.sharp);
   s.local.send(
     JSON.stringify({
       type: "primary-frame",
       edge: s.captureEdge,
       sharp: s.captureSharp,
-      fps: Math.max(...peers.map((p) => p.profile?.fps || 30)),
+      fps: Math.min(60, screens.length * Math.max(...viewers.map((p) => p.profile?.fps || 30))),
+      screen: s.captureScreen,
     }),
   );
+}
+function viewerScreens(s, p, screens) {
+  p.screens = Array.isArray(screens) ? screens : [];
+  const button = $("switch-display");
+  button.hidden = p.screens.length < 2;
+  const active = p.screens.findIndex((screen) => screen.id === p.screen);
+  button.textContent = `螢幕 ${Math.max(1, active + 1)} / ${p.screens.length}`;
+  button.disabled = s.switchingScreen === true;
+  if (p.screens.length > 1 || (p.screen && active < 0)) {
+    p.pc?.close();
+    p.pc = null;
+    p.direct = false;
+  }
+  if ((!p.waitingScreen && p.screen && active < 0) ||
+      (p.waitingScreen && !p.screens.some((screen) => screen.id === p.requestedScreen)))
+    waitForScreen(s, p, p.screens[0]?.id ?? null);
+  button.onclick = () => {
+    const selected = p.screens[(active + 1) % p.screens.length];
+    if (!selected || !current(s) || s.switchingScreen) return;
+    if (p.control) s.sendInput?.({ kind: "release" });
+    waitForScreen(s, p, selected.id);
+    s.relay.json(p.id, { t: "select-screen", screen: selected.id });
+  };
+}
+function waitForScreen(s, p, screen) {
+  p.waitingScreen = true;
+  p.requestedScreen = screen;
+  p.screenRevision = (p.screenRevision || 0) + 1;
+  s.switchingScreen = true;
+  $("switch-display").disabled = true;
+  $("first-picture").textContent = "正在切換螢幕…";
+  $("first-picture").hidden = false;
+}
+function selectHostScreen(s, p, screen) {
+  if (p.screen === screen) return;
+  if (p.control)
+    s.local.send(JSON.stringify({ type: "input", id: p.localId, event: { kind: "release" } }));
+  p.screen = screen;
+  p.hasSwitched = true;
+  p.pendingScreen = true;
+  p.lastImage = null;
+  p.nextFrame = 0;
+}
+function updateHostScreens(s, screens) {
+  if (!Array.isArray(screens) || JSON.stringify(screens) === JSON.stringify(s.screens)) return;
+  s.screens = screens;
+  for (const p of s.peers.values()) {
+    if (!p.approved) continue;
+    if (screens.length > 1 || !screens.some((screen) => screen.id === p.screen)) {
+      p.pc?.close();
+      p.pc = p.sender = null;
+      p.direct = false;
+    }
+    if (!screens.some((screen) => screen.id === p.screen))
+      selectHostScreen(s, p, screens[0]?.id ?? null);
+    s.relay.json(p.id, { t: "desktop-screens", screens });
+  }
 }
 function startCapture(s) {
   const source = (s.source = document.createElement("canvas"));
@@ -1375,7 +1482,7 @@ function startCapture(s) {
       const encoded = new Map(),
         now = performance.now();
       for (const p of s.peers.values()) {
-        if (!p.approved) continue;
+        if (!p.approved || p.screen !== s.captureScreen) continue;
         tuneSender(s, p);
         if (p.direct || p.sendingImage || now < (p.nextFrame || 0)) continue;
         const { edge, fps, sharp } = p.profile || {
@@ -1419,13 +1526,18 @@ function startCapture(s) {
           encoded.set(key, jpeg);
         }
         if (!current(s) || s.peers.get(p.id) !== p) continue;
+        if (p.screen !== s.captureScreen) continue;
         p.nextFrame = now + 1000 / fps - 1;
         if (now - p.lastImageAt < 2000 && sameImage(p.lastImage, jpeg))
           continue;
         p.lastImage = jpeg;
         p.lastImageAt = now;
         p.sendingImage = true;
-        Promise.resolve(s.relay.sendImage(p.id, jpeg, p.frameParts)).finally(
+        const switchNotice = p.pendingScreen
+          ? s.relay.json(p.id, { t: "screen-active", screen: p.screen })
+          : null;
+        p.pendingScreen = false;
+        Promise.resolve(switchNotice).then(() => s.relay.sendImage(p.id, jpeg, p.frameParts)).finally(
           () => {
             p.sendingImage = false;
           },
@@ -1455,6 +1567,7 @@ async function captureFailed(s, reason, kind = "unavailable") {
   );
 }
 function standby() {
+  clearTimeout(hostRetry);
   if (!token || hostSession) return;
   const s = begin(true);
   s.local = localSocket();
@@ -1483,9 +1596,18 @@ function standby() {
         s.localCode = m.code;
         s.cap = m.capabilities;
         s.primary = m.primaryCapture;
+        s.screens = m.screens || [];
         if (!s.primary) throw Error("請開啟新版桌面程式以連接主螢幕。");
         s.frame = startCapture(s);
         await connectRelay(s);
+        s.screenPoll = setInterval(() => {
+          if (s.local.readyState === 1) s.local.send(JSON.stringify({ type: "capabilities" }));
+        }, 2500);
+      }
+      if (m.type === "screen-changed") {
+        s.reading = false;
+        updateHostScreens(s, m.screens);
+        nextFrame(s);
       }
       if (m.type === "capture-error")
         await captureFailed(s, m.message, m.reason);
@@ -1493,6 +1615,7 @@ function standby() {
         const changed =
           JSON.stringify(s.cap) !== JSON.stringify(m.capabilities);
         s.cap = m.capabilities;
+        updateHostScreens(s, m.screens);
         if (changed)
           for (const p of s.peers.values())
             if (p.row && !p.approved && !p.claiming) renderRequest(s, p);
@@ -1531,6 +1654,7 @@ $("pair-again").onclick = () => {
 $("relay").onchange = () => {
   localStorage.setItem("rc-relay", $("relay").value.trim());
   if (hostSession && !hostSession.peers.size) {
+    hostSession.stopped = true;
     closeSession(hostSession, "");
     standby();
   }
@@ -1626,11 +1750,19 @@ $("cancel").onclick = $("leave").onclick = () => {
   if (viewerSession) closeSession(viewerSession, "連線已結束。");
 };
 $("stop").onclick = () => {
-  if (hostSession) closeSession(hostSession, "已停止接受連線。");
+  clearTimeout(hostRetry);
+  if (hostSession) {
+    hostSession.stopped = true;
+    closeSession(hostSession, "已停止接受連線。");
+  }
 };
 window.addEventListener("pagehide", () => {
+  clearTimeout(hostRetry);
   if (viewerSession) closeSession(viewerSession, "連線已結束。");
-  if (hostSession) closeSession(hostSession, "連線已結束。");
+  if (hostSession) {
+    hostSession.stopped = true;
+    closeSession(hostSession, "連線已結束。");
+  }
 });
 
 const ime = $("ime"),

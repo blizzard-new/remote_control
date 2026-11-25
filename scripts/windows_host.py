@@ -61,6 +61,10 @@ def prepare_windows_trust(ca_path):
 
 def open_host(url):
     try:
+        if sys.platform.startswith("linux") and getattr(sys, "frozen", False):
+            from native.linux import open_desktop_file
+            open_desktop_file(url)
+            return
         if webbrowser.open(url, new=2):
             return
     except (OSError, webbrowser.Error):
@@ -68,7 +72,7 @@ def open_host(url):
     print("請在這台電腦的 Chrome 或 Edge 貼上上方的主機連結。", flush=True)
 
 
-def start_online(port, *, on_ready):
+def start_online(port, *, on_ready, handle_signals=True):
     if port is not None and not 0 <= port <= 65535:
         raise ValueError("本機連接埠必須在 0–65535 之間")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -82,7 +86,7 @@ def start_online(port, *, on_ready):
             if port is not None or not unavailable:
                 raise
             listener.bind(("127.0.0.1", 0))
-        run_server([], online_socket=listener, on_ready=on_ready)
+        run_server([], online_socket=listener, on_ready=on_ready, handle_signals=handle_signals)
 
 
 def main():
@@ -94,11 +98,24 @@ def main():
     parser.add_argument("--lan", action="store_true", help="使用區域網路與自訂憑證模式")
     parser.add_argument("--address", type=ipaddress.IPv4Address, help="這台電腦的 LAN IPv4")
     parser.add_argument("--port", type=int, help="指定連接埠；跨網路模式可填 0 讓系統分配")
-    data_home = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    parser.add_argument("--state-dir", type=Path, default=data_home / "RemoteControlHost" / "identities")
+    from server.pairings import device_store
+    parser.add_argument("--state-dir", type=Path, default=device_store().parent / "identities")
     parser.add_argument("--no-browser", action="store_true", help="僅在主控台顯示連結與公開憑證位置")
+    parser.add_argument("--background", action="store_true", help="Windows 登入時在通知區域啟動")
+    parser.add_argument("--exit", action="store_true", help="結束目前的 Windows 遠端待命")
     args = parser.parse_args()
     if not args.lan and args.address is None:
+        if sys.platform == "win32" and not args.no_browser:
+            from native.windows_app import run, show_message
+            try:
+                run(start_online, args.port, background=args.background, exit_only=args.exit)
+            except (OSError, ValueError, RuntimeError, ImportError) as error:
+                if args.exit:
+                    print(error, file=sys.stderr)
+                else:
+                    show_message(error)
+                return 1
+            return 0
         start_online(args.port, on_ready=None if args.no_browser else open_host)
         return 0
     print("將手機或平板連上與這台電腦相同的區網。", flush=True)

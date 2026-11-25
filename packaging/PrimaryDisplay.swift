@@ -12,8 +12,8 @@ private actor PrimaryDisplay {
     var lastDisplay: CGDirectDisplayID?
     var size = CGSize.zero
 
-    func jpeg(edge: Int, sharp: Bool) async throws -> Data {
-        let id = CGMainDisplayID()
+    func jpeg(display: UInt32, edge: Int, sharp: Bool) async throws -> Data {
+        let id = display == 0 ? CGMainDisplayID() : display
         let bounds = CGDisplayBounds(id).size
         if filter == nil || lastDisplay != id || bounds != size {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -70,13 +70,20 @@ public func captureJPEG(_ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt
 public func captureProfileJPEG(_ edge: Int32, _ sharp: Int32,
                                _ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
                                _ length: UnsafeMutablePointer<Int>) -> Int32 {
+    return captureDisplayJPEG(0, edge, sharp, output, length)
+}
+
+@_cdecl("rc_capture_display_jpeg")
+public func captureDisplayJPEG(_ display: UInt32, _ edge: Int32, _ sharp: Int32,
+                               _ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+                               _ length: UnsafeMutablePointer<Int>) -> Int32 {
     output.pointee = nil
     length.pointee = 0
     guard #available(macOS 14.0, *) else { return 2 }
     let result = CaptureResult()
     let task = Task {
         do {
-            result.jpeg = try await PrimaryDisplay.shared.jpeg(edge: min(3840, max(1, Int(edge))), sharp: sharp != 0)
+            result.jpeg = try await PrimaryDisplay.shared.jpeg(display: display, edge: min(3840, max(1, Int(edge))), sharp: sharp != 0)
             result.status = 0
         } catch {
             let code = error as NSError

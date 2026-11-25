@@ -88,9 +88,14 @@ def display_bridge():
     return library
 
 
-def capture_jpeg(library, edge=1920, sharp=False):
+def capture_jpeg(library, edge=1920, sharp=False, display=0):
     data, length = ct.c_void_p(), ct.c_ssize_t()
-    status = library.rc_capture_jpeg_for_profile(edge, int(sharp), ct.byref(data), ct.byref(length))
+    if display:
+        capture = _bind(library, "rc_capture_display_jpeg", ct.c_int32, ct.c_uint32, ct.c_int32, ct.c_int32,
+                        ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
+        status = capture(display, edge, int(sharp), ct.byref(data), ct.byref(length))
+    else:
+        status = library.rc_capture_jpeg_for_profile(edge, int(sharp), ct.byref(data), ct.byref(length))
     try:
         if status == 1:
             raise PermissionError("macOS 拒絕這個 RemoteControl 程序錄製螢幕。若系統開關已開，請從進階設定重新開啟程式。")
@@ -128,6 +133,21 @@ class Quartz:
         self._flags = _bind(cg, "CGEventGetFlags", ct.c_uint64, ref)
         self._set_flags = _bind(cg, "CGEventSetFlags", None, ref, ct.c_uint64)
         self._post = _bind(cg, "CGEventPost", None, uint, ref)
+
+    def monitors(self):
+        from .monitors import Monitor
+        displays, count = (ct.c_uint32 * 32)(), ct.c_uint32()
+        if self._displays(len(displays), displays, ct.byref(count)):
+            return []
+        main = self._main()
+        result = []
+        for identifier in displays[:count.value]:
+            rect = self._bounds(identifier)
+            left, top = int(rect.origin.x), int(rect.origin.y)
+            size = int(rect.size.width), int(rect.size.height)
+            if min(size) > 0:
+                result.append(Monitor(str(identifier), (left, top, left + size[0], top + size[1]), identifier == main))
+        return sorted(result, key=lambda monitor: (not monitor.primary, monitor.id))
 
     def bounds(self, primary=False):
         displays, count = (ct.c_uint32 * 2)(), ct.c_uint32()
@@ -227,9 +247,11 @@ class MacBackend:
             flags |= MODIFIERS.get(key, 0)
         return flags
 
-    def _position(self, event):
+    def _position(self, event, monitor=None):
         if "x" not in event:
             return self.quartz.cursor()
+        if monitor is not None:
+            return monitor.position(event["x"], event["y"])
         x, y, width, height = self._display
         return x + event["x"] * (width - 1), y + event["y"] * (height - 1)
 
@@ -261,24 +283,24 @@ class MacBackend:
         bridge = display_bridge()
         return bool(bridge and bridge.rc_focused_editable())
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         kind = event["kind"]
         if kind == "text":
             self.quartz.text(event["text"])
         elif kind == "key":
             self._key(event["code"], event["down"])
         elif kind == "button":
-            self._button(event["button"], event["down"], self._position(event))
+            self._button(event["button"], event["down"], self._position(event, monitor))
         elif kind == "move":
             held = next(reversed(self._buttons), None)
             button, event_type = (0, 5) if held is None else (BUTTONS[held][0], BUTTONS[held][3])
-            self.quartz.mouse(event_type, self._position(event), button, self._flags(self._keys),
+            self.quartz.mouse(event_type, self._position(event, monitor), button, self._flags(self._keys),
                               self._buttons.get(held, 0))
         elif kind == "wheel":
             total = [self._wheel_pixels[0] + event["dx"], self._wheel_pixels[1] + event["dy"]]
             dx, dy = (trunc(pixels) for pixels in total)
             if dx or dy:
-                self.quartz.scroll(dx, dy, self._position(event), self._flags(self._keys))
+                self.quartz.scroll(dx, dy, self._position(event, monitor), self._flags(self._keys))
             self._wheel_pixels[:] = [total[0] - dx, total[1] - dy]
 
     def release_all(self):

@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestServer
 from PIL import Image, ImageDraw, ImageChops, ImageStat
 
 from native.screen import PrimaryScreen
+from native.monitors import Monitor
 from playwright.async_api import async_playwright, expect
 
 from browser_smoke import RecordingDesktop
@@ -89,6 +90,64 @@ async def visible_phone(page):
 
 
 class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_phone_switches_monitors_and_clicks_the_visible_screen(self):
+        primary = Monitor("main", (0, 0, 640, 360), True)
+        hdmi = Monitor("hdmi", (-480, 0, 0, 640))
+
+        class TwoScreens(Screen):
+            monitors = [primary, hdmi]
+
+            def displays(self):
+                return self.monitors
+
+            async def frame(self, *, edge, sharp, monitor=None):
+                if monitor is None:
+                    monitor = self.monitors[0]
+                return jpeg(Image.new("RGB", monitor.size, "green" if monitor.primary else "red"))
+
+        class DesktopWithMonitors(RecordingDesktop):
+            def apply(self, event, monitor=None):
+                super().apply(dict(event, monitor=monitor.id if monitor else None))
+
+        with TemporaryDirectory() as tmp:
+            desktop_db, phone_db = Path(tmp) / "desktop", Path(tmp) / "phone"
+            native, screens = DesktopWithMonitors(), TwoScreens(b"")
+            host = create_app("desktop", native, device_store=desktop_db, primary_capture=screens)
+            viewer = create_app("phone", RecordingDesktop(), device_store=phone_db, primary_capture=Screen(b""))
+            async with AsyncExitStack() as stack:
+                relay = await stack.enter_async_context(TestServer(relay_app()))
+                laptop = await stack.enter_async_context(TestServer(host))
+                handset = await stack.enter_async_context(TestServer(viewer))
+                address = str(relay.make_url("/")).rstrip("/")
+                a, b = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+                update(desktop_db, "save", dict(listen=a, dial=b, name="Phone", platform="Android", address=address, grant="control"))
+                update(phone_db, "save", dict(listen=b, dial=a, name="PC", platform="Windows", address=address, grant=""))
+                browser = await launch_browser(stack)
+                await open_device(browser, laptop, address, "PC", "Windows", "desktop")
+                phone = await open_device(browser, handset, address, "Phone", "Android", "phone")
+                await phone.locator("#remembered button").first.click()
+                await phone.locator("#action-connect").click()
+                button = phone.locator("#switch-display")
+                picture = phone.locator("#picture")
+                await expect(button).to_have_text("螢幕 1 / 2")
+                await phone.wait_for_function("() => document.querySelector('#picture').width === 640")
+                await button.click()
+                await expect(button).to_have_text("螢幕 2 / 2")
+                await phone.wait_for_function("""() => {
+                    const canvas = document.querySelector('#picture');
+                    return canvas.height === 640 &&
+                      canvas.getContext('2d').getImageData(10,10,1,1).data[0] > 220;
+                }""")
+                await picture.click()
+                async with asyncio.timeout(5):
+                    while (event := await native.events.get())["kind"] != "button":
+                        pass
+                self.assertEqual(event["monitor"], "hdmi")
+                screens.monitors = [primary]
+                await expect(button).to_be_hidden()
+                await phone.wait_for_function("() => document.querySelector('#picture').width === 640")
+                await expect(phone.locator("#first-picture")).to_be_hidden()
+
     async def test_open_phone_screen_from_an_active_incoming_connection(self):
         desktop_platform = os.environ.get("REMOTE_DESKTOP_PLATFORM", "Darwin")
         mac, phone = RecordingDesktop(), RecordingDesktop()

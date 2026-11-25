@@ -1,6 +1,6 @@
 # Remote Control 遠端桌面
 
-Windows、Mac 與 Android 可以互相連線。手機可用觸控、滑鼠及鍵盤操作電腦，電腦也可點擊、長按、拖曳和捲動手機畫面。第一次配對輸入四位數，後續可直接點選已配對的裝置。
+Windows、Mac、Linux 和 Android 可以互相連線。手機可用觸控、滑鼠及鍵盤操作電腦，電腦也可點擊、長按、拖曳和捲動手機畫面。第一次配對輸入四位數，後續可直接點選已配對的裝置。
 
 [桌面裝置中心](docs/device-center.png) · [手機裝置詳情](docs/device-detail-mobile.png)
 
@@ -36,7 +36,15 @@ Windows、Mac 與 Android 可以互相連線。手機可用觸控、滑鼠及鍵
 
 ## 在 Windows 或 Mac 啟動
 
-直接開啟桌面版會進入跨網路模式。本機控制頁優先使用 8443，若已被占用，程式會自動改用可用的連接埠並開啟正確的網址。
+直接開啟桌面版會進入跨網路模式。本機控制頁優先使用 8443，若已被占用，程式會自動改用可用的連接埠。
+
+Windows 安裝版使用 Microsoft Edge WebView2。第一次開啟後，會在此 Windows 使用者每次登入時於背景自動待命。按視窗右上角的 X 會收進通知區域，手機可繼續使用既有配對。用通知區域圖示或開始功能表可重新開啟視窗，或從通知區域選「結束遠端待命」。Windows 必須有已登入的一般桌面。剛開機停在登入畫面、鎖定畫面和 UAC 安全桌面由 Windows 管理。
+
+延伸桌面連線時，手機工具列會顯示目前的「螢幕 1 / 2」。按一下可在主螢幕和延伸螢幕之間切換，觸控會對應目前顯示的螢幕。拔除延伸螢幕時會自動回到可用螢幕。此功能支援 Windows、macOS 14 以上的安裝版，以及具備 RandR 1.5 的原生 X11。
+
+## 在 Linux 啟動
+
+在 Ubuntu／Debian 的 64 位元 x86 系統，下載 `RemoteControl-Linux-amd64.deb` 後以套件管理員開啟，或執行 `sudo apt install ./RemoteControl-Linux-amd64.deb`。從應用程式選單開啟 Uniway Remote 後，瀏覽器會開啟裝置列表，可使用同一套四碼配對和跨網路連線。分享及操作 Linux 整個桌面需要登入 X11 工作階段，例如登入頁面選擇「Ubuntu on Xorg」。Wayland 桌面可使用程式連到其他裝置。 [下載頁](https://github.com/blizzard-new/remote_control/releases/latest)
 
 **區網專用模式**可用 `.\RemoteControl-Windows-x64.exe --lan` 啟動。選擇這台電腦的區網 IPv4 位址；例如電腦是 `192.168.1.20`，平板就開啟 `https://192.168.1.20:8443/`。請保持啟動視窗開啟。[建置與下載](https://github.com/blizzard-new/remote_control/actions?query=workflow%3A%22Build+and+test%22)
 

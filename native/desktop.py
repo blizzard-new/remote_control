@@ -44,7 +44,7 @@ class Desktop:
                 self._backend = MacBackend(primary_only=primary_only)
             elif sys.platform.startswith("linux"):
                 from .x11 import X11Backend
-                self._backend = X11Backend()
+                self._backend = X11Backend(extended=primary_only)
         except (AttributeError, ImportError, OSError, RuntimeError) as exc:
             # Video sharing still works without a usable native desktop.
             self._failure = str(exc)
@@ -81,6 +81,10 @@ class Desktop:
         probe = getattr(self._backend, "editable_focus", None)
         return bool(probe and probe())
 
+    def monitors(self):
+        enumerate_monitors = getattr(self._backend, "monitors", None)
+        return enumerate_monitors() if enumerate_monitors else []
+
     def request_control(self):
         if hasattr(self._backend, "request_control"):
             return self._backend.request_control()
@@ -90,7 +94,7 @@ class Desktop:
     def privacy_enabled(self):
         return bool(getattr(self._backend, "privacy_enabled", False))
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         validate_event(event)
         if event["kind"] == "release":
             self.release()
@@ -98,7 +102,10 @@ class Desktop:
         if not self.capabilities["control"]:
             self.release()
             raise RuntimeError("遠端輸入需要支援的單螢幕桌面")
-        self._backend.apply(event)
+        if monitor is None:
+            self._backend.apply(event)
+        else:
+            self._backend.apply(event, monitor)
 
     def release(self):
         if self._backend is not None:
