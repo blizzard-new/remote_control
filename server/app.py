@@ -162,7 +162,7 @@ class Room:
         self.monitors = {monitor.id: monitor for monitor in monitors}
         return [{"id": monitor.id, "primary": monitor.primary} for monitor in monitors]
 
-    async def capture_frame(self, host, fps, edge, sharp, monitor):
+    async def capture_frame(self, host, fps, edge, sharp, monitor, frame):
         try:
             await asyncio.sleep(max(0, self.last_capture + 1/fps - monotonic()))
             self.last_capture = monotonic()
@@ -171,10 +171,13 @@ class Room:
                 profile["monitor"] = monitor
             data = await self.primary_capture.frame(**profile)
             if host is self.host and any(p.approved for p in self.peers.values()):
+                if frame:
+                    data = frame.to_bytes(4, "big") + data
+                self.frame_task = None
                 await host.send_bytes(data)
         except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
             if host is self.host:
-                await send(host, "capture-error", message=str(exc) or "無法擷取主螢幕。",
+                await send(host, "capture-error", frame=frame, message=str(exc) or "無法擷取主螢幕。",
                            reason="permission" if isinstance(exc, PermissionError) else "unavailable")
 
     async def stop_capture(self):
@@ -201,6 +204,9 @@ class Room:
             return await send(host, "capabilities", capabilities=self.desktop.capabilities, screens=self.display_state())
         if kind == "primary-frame":
             if self.primary_capture and any(p.approved for p in self.peers.values()):
+                frame = message.get("frame", 0)
+                if type(frame) is not int or not 0 <= frame <= 0xffffffff:
+                    return
                 if self.frame_task is None or self.frame_task.done():
                     edge = message.get("edge")
                     if edge not in (960, 1280, 1920, 2560, 3840):
@@ -209,8 +215,11 @@ class Room:
                     screen = message.get("screen")
                     monitor = self.monitors.get(screen) if isinstance(screen, str) else None
                     if screen is not None and monitor is None:
-                        return await send(host, "screen-changed", screens=self.display_state())
-                    self.frame_task = asyncio.create_task(self.capture_frame(host, fps, int(edge), message.get("sharp") is True, monitor))
+                        return await send(host, "screen-changed", frame=frame, screens=self.display_state())
+                    self.frame_task = asyncio.create_task(self.capture_frame(
+                        host, fps, int(edge), message.get("sharp") is True, monitor, frame))
+                elif frame:
+                    return await send(host, "capture-busy", frame=frame)
             return
         if kind == "privacy":
             return await self.privacy_request(message)
@@ -298,7 +307,7 @@ class Room:
                 self.code = secrets.token_urlsafe(12)
                 await send(socket, "hosted", code=self.code, capabilities=self.desktop.capabilities,
                            iceServers=self.ice_servers, primaryCapture=self.primary_capture is not None,
-                           screens=self.display_state())
+                           screens=self.display_state(), captureSequence=True)
             elif (message.get("type") == "join" and self.host is not None and
                   matches(message.get("code"), self.code) and len(self.peers) < MAX_PEERS):
                 name = message.get("name")

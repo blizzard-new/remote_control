@@ -1496,6 +1496,7 @@ function nextFrame(s) {
     (!p.sendingImage || p.direct || p.pc?.connectionState === "connected"));
   if (!peers.length) return;
   s.reading = true;
+  s.captureNumber = ((s.captureNumber || 0) + 1) >>> 0 || 1;
   const screens = [...new Set(peers.map((p) => p.screen))];
   const active = (s.screenCursor || 0) % screens.length;
   s.screenCursor = active + 1;
@@ -1506,6 +1507,7 @@ function nextFrame(s) {
   s.local.send(
     JSON.stringify({
       type: "primary-frame",
+      ...(s.captureSequence ? { frame: s.captureNumber } : {}),
       edge: s.captureEdge,
       sharp: s.captureSharp,
       fps: Math.min(60, screens.length * Math.max(...settings.map((p) => p.fps))),
@@ -1580,10 +1582,10 @@ function startCapture(s) {
   s.stream = source.captureStream?.(60);
   const track = s.stream?.getVideoTracks()[0];
   const fallback = document.createElement("canvas");
-  return async (data) => {
+  return async (data, frame) => {
     const image = await decodeJpeg(data);
     try {
-      if (!current(s)) return;
+      if (!current(s) || s.captureNumber !== frame) return;
       if (source.width !== image.width || source.height !== image.height) {
         source.width = image.width;
         source.height = image.height;
@@ -1616,7 +1618,7 @@ function startCapture(s) {
             data.byteLength <= limit &&
             !!sharp === s.captureSharp
           )
-            jpeg = new Uint8Array(data);
+            jpeg = data;
           else {
             fallback.width = Math.max(1, Math.round(image.width * scale));
             fallback.height = Math.max(1, Math.round(image.height * scale));
@@ -1641,7 +1643,7 @@ function startCapture(s) {
           if (!jpeg) continue;
           encoded.set(key, jpeg);
         }
-        if (!current(s) || s.peers.get(p.id) !== p) continue;
+        if (!current(s) || s.captureNumber !== frame || s.peers.get(p.id) !== p) continue;
         if (p.screen !== s.captureScreen) continue;
         if (now - p.lastImageAt < 2000 && sameImage(p.lastImage, jpeg))
           continue;
@@ -1692,16 +1694,19 @@ function standby() {
     if (!current(s)) return;
     try {
       if (e.data instanceof ArrayBuffer) {
+        const frame = s.captureNumber;
+        if (s.captureSequence && (e.data.byteLength < 5 || !s.reading ||
+            new DataView(e.data).getUint32(0) !== frame)) return;
         try {
-          await s.frame(e.data);
+          await s.frame(new Uint8Array(e.data, s.captureSequence ? 4 : 0), frame);
         } catch {
-          await captureFailed(
-            s,
-            "無法處理主螢幕畫面。請重新連線，或用新版瀏覽器開啟主機分頁。",
-          );
+          if (s.captureNumber === frame)
+            await captureFailed(s, "無法處理主螢幕畫面。請重新連線，或用新版瀏覽器開啟主機分頁。");
         } finally {
-          s.reading = false;
-          nextFrame(s);
+          if (s.captureNumber === frame) {
+            s.reading = false;
+            nextFrame(s);
+          }
         }
         return;
       }
@@ -1711,6 +1716,7 @@ function standby() {
         s.localCode = m.code;
         s.cap = m.capabilities;
         s.primary = m.primaryCapture;
+        s.captureSequence = m.captureSequence === true;
         s.screens = m.screens || [];
         if (!s.primary) throw Error("請開啟新版桌面程式以連接主螢幕。");
         s.frame = startCapture(s);
@@ -1720,12 +1726,18 @@ function standby() {
         }, 2500);
       }
       if (m.type === "screen-changed") {
+        if (s.captureSequence && m.frame !== s.captureNumber) return;
         s.reading = false;
         updateHostScreens(s, m.screens);
         nextFrame(s);
       }
+      if (m.type === "capture-busy" && m.frame === s.captureNumber) {
+        s.reading = false;
+        setTimeout(() => nextFrame(s), 20);
+      }
       if (m.type === "capture-error")
-        await captureFailed(s, m.message, m.reason);
+        if (!s.captureSequence || m.frame === s.captureNumber)
+          await captureFailed(s, m.message, m.reason);
       if (m.type === "capabilities") {
         const changed =
           JSON.stringify(s.cap) !== JSON.stringify(m.capabilities);
