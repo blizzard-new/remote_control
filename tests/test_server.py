@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,37 @@ class SignalingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(approved, await self.expect(host, "approved"))
         self.assertEqual(approved["iceServers"], self.ice)
         self.assertEqual(approved["control"], control)
+
+    async def test_busy_desktop_capture_replies_with_the_request_number(self):
+        started, finish = asyncio.Event(), asyncio.Event()
+        picture = bytes.fromhex("ffd8ffd9")
+
+        class SlowCapture:
+            async def frame(self, *, edge, sharp):
+                started.set()
+                await finish.wait()
+                return picture
+
+            async def stop(self):
+                pass
+
+        self.client = TestClient(TestServer(create_app(
+            "admin", self.desktop, self.ice, Path(self.assets.name), primary_capture=SlowCapture())))
+        await self.client.start_server()
+        self.addAsyncCleanup(self.client.close)
+        host, code = await self.host()
+        viewer, peer = await self.join(host, code)
+        await self.approve(host, viewer, peer, False)
+        await host.send_json({"type": "primary-frame", "frame": 10})
+        await asyncio.wait_for(started.wait(), 5)
+        await host.send_json({"type": "primary-frame", "frame": 11})
+        self.assertEqual((await self.expect(host, "capture-busy"))["frame"], 11)
+        finish.set()
+        self.assertEqual(await host.receive_bytes(timeout=5), (10).to_bytes(4, "big") + picture)
+        await host.send_json({"type": "primary-frame", "frame": 11})
+        self.assertEqual(await host.receive_bytes(timeout=5), (11).to_bytes(4, "big") + picture)
+        await host.send_json({"type": "primary-frame"})
+        self.assertEqual(await host.receive_bytes(timeout=5), picture)
 
     async def test_two_viewers_and_one_controller(self):
         host, code = await self.host()

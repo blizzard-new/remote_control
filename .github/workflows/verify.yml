@@ -149,6 +149,8 @@ jobs:
           disable-animations: true
           script: |
             adb shell svc wifi enable
+            adb shell svc data disable
+            timeout 30 bash -c 'until adb shell ip -4 addr show dev wlan0 | grep -q "inet "; do sleep 1; done'
             adb shell wm size 800x1280
             bash android/tests/run-projection-test.sh
             adb exec-out run-as org.remotecontrol.share cat cache/verified-phone-screen.jpg > "$GITHUB_WORKSPACE/verified-phone-screen.jpg"
