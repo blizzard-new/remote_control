@@ -150,6 +150,9 @@ def launch(start_online, port, instance, background):
                                      pystray.MenuItem("結束遠端待命", quit_app)))
 
     def started():
+        if not window.events.shown.wait(15):
+            logging.error("Uniway Remote could not show its dashboard")
+            return
         if not background and getattr(sys, "frozen", False):
             try:
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:

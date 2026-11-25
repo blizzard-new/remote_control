@@ -82,8 +82,9 @@ def main(argv=None, *, on_ready=None, online_socket=None, handle_signals=True):
         listen = {"sock": online_socket}
     url = f"{'https' if context else 'http'}://{domain}:{port}{path}#host={token}"
     def announce(banner):
-        print(f"Open on this computer (private host link):\n{url}", flush=True)
-        print(banner, flush=True)
+        if handle_signals:
+            print(f"Open on this computer (private host link):\n{url}", flush=True)
+            print(banner, flush=True)
         if on_ready:
             on_ready(url)
 

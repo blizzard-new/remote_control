@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import platform
 import socket
 from pathlib import Path
@@ -425,7 +426,8 @@ def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_stor
                 if not isinstance(data, dict):
                     raise ValueError("裝置資料無效")
                 if data.get("action") == "self":
-                    return web.json_response({"name": socket.gethostname()[:48], "platform": platform.system()})
+                    return web.json_response({"name": socket.gethostname()[:48], "platform": platform.system(),
+                                              "relay": os.environ.get("REMOTE_RELAY_URL", "")})
                 devices = await asyncio.to_thread(update, device_store, data.get("action"), data.get("item", {}))
             except ValueError as error:
                 raise web.HTTPBadRequest(text=str(error))

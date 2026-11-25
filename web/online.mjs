@@ -60,6 +60,7 @@ const identityReady = (async () => {
   try {
     const info = await devices(token, "self");
     if (!info?.name || !platforms.has(info.platform)) return;
+    if (!localStorage.getItem("rc-relay") && info.relay) $("relay").value = info.relay;
     if ($("name").value === defaultName && !customName)
       $("name").value = info.name;
     defaultName = info.name;
@@ -1600,7 +1601,7 @@ function standby() {
         if (!s.primary) throw Error("請開啟新版桌面程式以連接主螢幕。");
         s.frame = startCapture(s);
         await connectRelay(s);
-        s.screenPoll = setInterval(() => {
+        if (current(s)) s.screenPoll = setInterval(() => {
           if (s.local.readyState === 1) s.local.send(JSON.stringify({ type: "capabilities" }));
         }, 2500);
       }
