@@ -1485,9 +1485,12 @@ function captureProfile(s, p) {
   };
 }
 function nextFrame(s) {
-  const peers = [...s.peers.values()].filter((p) => p.approved && !p.ending);
-  if (!current(s) || !peers.length || s.reading || s.local.readyState !== 1)
-    return;
+  if (!current(s) || s.reading || s.local.readyState !== 1) return;
+  // While a relay image is in flight, wait for the writer to request a fresh
+  // capture instead of repeatedly capturing and decoding frames it cannot send.
+  const peers = [...s.peers.values()].filter((p) => p.approved && !p.ending &&
+    (!p.sendingImage || p.direct || p.pc?.connectionState === "connected"));
+  if (!peers.length) return;
   s.reading = true;
   const screens = [...new Set(peers.map((p) => p.screen))];
   const active = (s.screenCursor || 0) % screens.length;
@@ -1645,11 +1648,11 @@ function startCapture(s) {
           ? s.relay.json(p.id, { t: "screen-active", screen: p.screen })
           : null;
         p.pendingScreen = false;
-        Promise.resolve(switchNotice).then(() => s.relay.sendImage(p.id, jpeg, p.frameParts)).finally(
-          () => {
+        Promise.resolve(switchNotice).then(() => s.relay.sendImage(p.id, jpeg, p.frameParts))
+          .finally(() => {
             p.sendingImage = false;
-          },
-        );
+            nextFrame(s);
+          });
       }
     } finally {
       image.close?.();
