@@ -14,8 +14,8 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_ID: '45539731751'
-      SOURCE_SHA: 4e4fe34d0719dee959b1491add111830e2cd9e1c
+      BUILD_ID: '45540355340'
+      SOURCE_SHA: 70632a48b7f87e5749feebb4ea342a233e8c2ecf
     steps:
       - uses: actions/checkout@v4
       - name: Check build and draft target
@@ -25,7 +25,7 @@ jobs:
           gh release view v0.5.7 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
       - uses: actions/download-artifact@v4
         with:
-          run-id: 45539731751
+          run-id: 45540355340
           github-token: ${{ github.token }}
           path: build-artifacts
       - name: Assemble and checksum downloads
@@ -42,7 +42,7 @@ jobs:
           cd downloads
           gh release download v0.5.6 -p RemoteControl-Server-Windows.zip
           sha256sum --check <<'SUMS'
-          f6b4448eca0569ea66eaf3bdb6e380ebcba53fff6c587c25cd1a726ce6177417  RemoteControl-Android.apk
+          36abd986c089532317503d3d8da023f79fedc31bf405f0a730f7dc23ffbf54f5  RemoteControl-Android.apk
           8eb76853034c37604f13d8ae9fc657de4503be1c5f365cb954554c5c5ac22c2d  RemoteControl-Server-Windows.zip
           SUMS
           sha256sum RemoteControl* > SHA256SUMS.txt
