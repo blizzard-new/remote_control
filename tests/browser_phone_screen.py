@@ -174,6 +174,8 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 await smooth(True)
                 optimized = await scroll()
                 small_frames = [width for width in optimized["widths"] if width < 2560]
+                print(f"{controller} scrolling produced {len(small_frames)} live frames from "
+                      f"{len(baseline)} baseline frames over 2.75s.", flush=True)
                 self.assertGreaterEqual(len(small_frames), max(6, len(baseline) * 2))
                 if os.environ.get("REMOTE_BROWSER", "chromium") == "chromium":
                     self.assertIn("VP8", optimized["stats"])

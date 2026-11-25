@@ -6,6 +6,7 @@ import {
   ImageAssembly,
   MotionEncoder,
   MotionDecoder,
+  supportsMotionVideo,
   sameImage,
 } from "./video.mjs";
 import {
@@ -34,6 +35,7 @@ if (token) $("lan").href = "/#host=" + encodeURIComponent(token);
 $("relay").value = localStorage.getItem("rc-relay") || DEFAULT_RELAY;
 const canvas = $("picture"),
   ctx = canvas.getContext("2d");
+const motionSupport = supportsMotionVideo();
 let hostSession = null;
 let viewerSession = null;
 let hostRetry = null;
@@ -543,18 +545,20 @@ async function connectRelay(s) {
         ? "關閉視窗後會繼續待命。新裝置可輸入四碼，已配對裝置可直接重連。"
         : "請保持此分頁開啟。新裝置可輸入四碼，已配對裝置可直接重連。");
     },
-    paired(id, pair) {
+    async paired(id, pair) {
       if (!current(s)) return;
       const p = { id, approved: false, pair };
       s.peers.set(id, p);
       p.timeout = setTimeout(() => s.relay.drop(id), 120000);
       if (!s.host) {
         clearTimeout(s.deadline);
+        const desktopVideo = await motionSupport;
+        if (!current(s) || s.peers.get(id) !== p) return;
         s.relay.json(id, {
           t: "request",
           viewOnly: !!s.viewOnly,
           monitorControls: true,
-          desktopVideo: typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function",
+          desktopVideo,
           avc: false,
           frameParts: true,
           screenRequest: !!window.PhoneDevices,
@@ -1478,7 +1482,7 @@ function captureProfile(s, p) {
     typeof VideoEncoder === "function" && typeof VideoFrame === "function";
   return {
     ...settings,
-    edge: Math.min(settings.edge, p.direct || motionVideo ? 1920 : 1280),
+    edge: Math.min(settings.edge, p.direct ? 1920 : 1280),
     sharp: false,
     scrolling: true,
     motionVideo,
