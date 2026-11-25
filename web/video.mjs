@@ -73,6 +73,17 @@ export function sameImage(previous, next) {
 }
 
 // Desktop scrolling frames share the JPEG relay, but use an interframe codec.
+const MOTION_CODEC = { codec: "vp8", optimizeForLatency: true };
+
+export async function supportsMotionVideo() {
+  if (typeof VideoDecoder !== "function" || typeof EncodedVideoChunk !== "function") return false;
+  try {
+    return (await VideoDecoder.isConfigSupported(MOTION_CODEC)).supported === true;
+  } catch {
+    return false;
+  }
+}
+
 export class MotionEncoder {
   constructor(send) {
     this.send = send;
@@ -167,7 +178,7 @@ export class MotionDecoder {
       error: fallback,
     });
     try {
-      this.decoder.configure({ codec: "vp8", optimizeForLatency: true });
+      this.decoder.configure(MOTION_CODEC);
     } catch (error) {
       this.close();
       throw error;
@@ -180,7 +191,7 @@ export class MotionDecoder {
     const key = packet[0] === 1;
     if (this.decoder.decodeQueueSize > 3) {
       this.decoder.reset();
-      this.decoder.configure({ codec: "vp8", optimizeForLatency: true });
+      this.decoder.configure(MOTION_CODEC);
       this.needKey = true;
     }
     if (this.needKey && !key) return;
