@@ -143,9 +143,13 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 canvas = page.locator("#picture")
                 full_width = "() => document.querySelector('#picture').width === 2560"
                 await page.wait_for_function(full_width, timeout=25000)
-                await page.locator("#video-menu summary").click()
-                await page.locator("#smooth-scroll").uncheck()
-                await page.locator("#video-menu summary").click()
+                async def smooth(enabled):
+                    await page.locator("#smooth-scroll").evaluate("""(field, value) => {
+                        field.checked = value;
+                        field.dispatchEvent(new Event('change'));
+                    }""", enabled)
+
+                await smooth(False)
 
                 async def scroll():
                     return await canvas.evaluate("""async (canvas) => {
@@ -167,9 +171,7 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 baseline = (await scroll())["widths"]
                 self.assertGreater(len(baseline), 0)
                 self.assertEqual(set(baseline), {2560})
-                await page.locator("#video-menu summary").click()
-                await page.locator("#smooth-scroll").check()
-                await page.locator("#video-menu summary").click()
+                await smooth(True)
                 optimized = await scroll()
                 small_frames = [width for width in optimized["widths"] if width < 2560]
                 self.assertGreaterEqual(len(small_frames), max(6, len(baseline) * 2))
