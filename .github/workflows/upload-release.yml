@@ -14,18 +14,28 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_ID: '45784438950'
-      SOURCE_SHA: ca1ad728fec01bec27583dc7bc879e23ca365377
+      BUILD_ID: '45784980566'
+      SOURCE_SHA: 9ae3c2de1ded4242eaa4e97affa89affe0eaf1ea
     steps:
       - uses: actions/checkout@v4
       - name: Check build and draft target
         run: |
-          gh run watch "$BUILD_ID" --interval 15 --exit-status
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.conclusion == "success" and .head_sha == $sha'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha'
+          while true; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID/jobs?per_page=100" > build-jobs.json
+            required='["Desktop (windows-latest)", "Desktop (macos-15)", "Desktop (macos-15-intel)", "Desktop (ubuntu-22.04)", "Android APK and screen capture", "Control Android and verify video on Windows"]'
+            if jq -e --argjson required "$required" '$required - [.jobs[] | select(.conclusion == "success") | .name] == []' build-jobs.json; then
+              break
+            fi
+            if jq -e --argjson required "$required" '[.jobs[] | select(.name as $name | $required | index($name)) | select(.status == "completed" and .conclusion != "success")] | length > 0' build-jobs.json; then
+              exit 1
+            fi
+            sleep 15
+          done
           gh release view v0.5.9 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
       - uses: actions/download-artifact@v4
         with:
-          run-id: 45784438950
+          run-id: 45784980566
           github-token: ${{ github.token }}
           path: build-artifacts
       - name: Assemble and checksum downloads
