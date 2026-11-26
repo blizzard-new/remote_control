@@ -14,8 +14,8 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_ID: '45772300860'
-      SOURCE_SHA: d1f12306a271f047676c7450faf7a70fa7a09467
+      BUILD_ID: '45773067271'
+      SOURCE_SHA: 76e6892d842568a6cddc1673a10ca88de36dd9bd
     steps:
       - uses: actions/checkout@v4
       - name: Check build and draft target
@@ -25,7 +25,7 @@ jobs:
           gh release view v0.5.8 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
       - uses: actions/download-artifact@v4
         with:
-          run-id: 45772300860
+          run-id: 45773067271
           github-token: ${{ github.token }}
           path: build-artifacts
       - name: Assemble and checksum downloads
