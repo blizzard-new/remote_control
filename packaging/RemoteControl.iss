@@ -10,7 +10,7 @@ OutputDir=..\dist
 OutputBaseFilename=RemoteControl-Setup-Windows-x64
 Compression=lzma2
 SolidCompression=yes
-CloseApplications=yes
+CloseApplications=no
 RestartApplications=no
 
 [Files]
@@ -43,6 +43,9 @@ function ReleaseMutex(Handle: THandle): Boolean;
   external 'ReleaseMutex@kernel32.dll stdcall';
 function CloseHandle(Handle: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
+function CreateFile(Name: String; Access, ShareMode, Security, Disposition,
+  Attributes: LongWord; TemplateFile: THandle): THandle;
+  external 'CreateFileW@kernel32.dll stdcall';
 
 function WaitForHostToExit(Handle: THandle; Timeout: LongWord): Boolean;
 var
@@ -54,25 +57,25 @@ begin
     ReleaseMutex(Handle);
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function StopRunningHost: Boolean;
 var
   HostMutex, ExitEvent: THandle;
 begin
   { An installed copy and a portable copy share the same session. Stop either
     before replacing files or launching the new dashboard. }
-  Result := 'Uniway Remote is still running. Select Exit in its notification area menu and try again.';
+  Result := False;
   HostMutex := OpenMutex($00100001, False, HostMutexName);
   if HostMutex = 0 then
   begin
     if DLLGetLastError = 2 then
-      Result := '';
+      Result := True;
     exit;
   end;
 
   try
     if WaitForHostToExit(HostMutex, 0) then
     begin
-      Result := '';
+      Result := True;
       exit;
     end;
     ExitEvent := OpenEvent($0002, False, HostMutexName + '.exit');
@@ -80,17 +83,50 @@ begin
     begin
       try
         Log('Asking the existing Uniway Remote instance to stop.');
-        if SetEvent(ExitEvent) and WaitForHostToExit(HostMutex, 20000) then
-          Result := '';
+        if SetEvent(ExitEvent) then
+          Result := WaitForHostToExit(HostMutex, 20000);
       finally
         CloseHandle(ExitEvent);
       end;
     end
-    else if WaitForHostToExit(HostMutex, 0) then
-      Result := '';
+    else
+      Result := WaitForHostToExit(HostMutex, 0);
   finally
     CloseHandle(HostMutex);
   end;
+end;
+
+function WaitForInstalledFile: Boolean;
+var
+  Executable: String;
+  Handle: THandle;
+  Attempt: Integer;
+begin
+  Executable := ExpandConstant('{app}\RemoteControlHost.exe');
+  Result := True;
+  if not FileExists(Executable) then
+    exit;
+
+  { The PyInstaller bootstrap process can still hold the executable after
+    the application releases its mutex. Check when the file can be replaced. }
+  for Attempt := 1 to 100 do
+  begin
+    Handle := CreateFile(Executable, $40000000, 0, 0, 3, $80, 0);
+    if Handle <> THandle(-1) then
+    begin
+      CloseHandle(Handle);
+      exit;
+    end;
+    Sleep(100);
+  end;
+  Result := False;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := 'Uniway Remote could not be replaced. Exit Uniway Remote from the notification area and try again.';
+  if StopRunningHost and WaitForInstalledFile then
+    Result := '';
 end;
 
 procedure CurStepChanged(Step: TSetupStep);
