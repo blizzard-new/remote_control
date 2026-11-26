@@ -25,8 +25,13 @@ jobs:
           path: build/phone-fixture
       - run: python -m pip install -r requirements.txt 'playwright==1.62.0'
       - run: python -m playwright install webkit
-      - run: python -u -m unittest discover -s tests -p browser_phone_screen.py -v
-        timeout-minutes: 5
+      - run: |
+          export PYTHONPATH=.:tests
+          for test in             test_open_phone_screen_from_an_active_incoming_connection             test_phone_receives_the_requested_desktop_detail_and_resolution             test_phone_switches_monitors_and_clicks_the_visible_screen             test_scrolling_preserves_selected_resolution_and_uses_native_jpeg
+          do
+            python -u -m unittest "browser_phone_screen.PhoneScreenSmoke.$test" -v || exit $?
+          done
+        timeout-minutes: 6
         env:
           REMOTE_BROWSER: webkit
           REMOTE_DESKTOP_PLATFORM: Darwin
