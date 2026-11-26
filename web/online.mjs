@@ -1444,13 +1444,19 @@ function nextFrame(s) {
   const active = (s.screenCursor || 0) % screens.length;
   s.screenCursor = active + 1;
   s.captureScreen = screens[active];
-  const settings = peers.filter((p) => p.screen === s.captureScreen).map((p) => p.profile);
+  const selected = peers.filter((p) => p.screen === s.captureScreen);
+  const settings = selected.map((p) => p.profile);
+  const now = performance.now();
   s.captureEdge = Math.max(...settings.map((p) => p.edge));
   s.captureSharp = settings.some((p) => p.sharp);
   s.local.send(
     JSON.stringify({
       type: "primary-frame",
-      ...(s.captureSequence ? { frame: s.captureNumber } : {}),
+      ...(s.captureSequence ? {
+        frame: s.captureNumber,
+        skipDuplicate: selected.every((p) => p.lastImage && now - p.lastImageAt < 2000 &&
+          !p.direct && p.pc?.connectionState !== "connected"),
+      } : {}),
       edge: s.captureEdge,
       sharp: s.captureSharp,
       fps: Math.min(60, screens.length * Math.max(...settings.map((p) => p.fps))),
@@ -1671,6 +1677,10 @@ function standby() {
       if (m.type === "capture-busy" && m.frame === s.captureNumber) {
         s.reading = false;
         setTimeout(() => nextFrame(s), 20);
+      }
+      if (m.type === "capture-unchanged" && m.frame === s.captureNumber) {
+        s.reading = false;
+        nextFrame(s);
       }
       if (m.type === "capture-error")
         if (!s.captureSequence || m.frame === s.captureNumber)

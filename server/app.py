@@ -68,6 +68,7 @@ class Room:
         self.desktop = desktop
         self.ice_servers = ice_servers
         self.last_capture = 0.0
+        self.previous_capture = None
         self.primary_capture = primary_capture
         self.monitors = {}
         self.frame_task = None
@@ -181,7 +182,7 @@ class Room:
         self.monitors = {monitor.id: monitor for monitor in monitors}
         return [{"id": monitor.id, "primary": monitor.primary} for monitor in monitors]
 
-    async def capture_frame(self, host, fps, edge, sharp, monitor, frame):
+    async def capture_frame(self, host, fps, edge, sharp, monitor, frame, skip_duplicate):
         try:
             await asyncio.sleep(max(0, self.last_capture + 1/fps - monotonic()))
             self.last_capture = monotonic()
@@ -190,9 +191,14 @@ class Room:
                 profile["monitor"] = monitor
             data = await self.primary_capture.frame(**profile)
             if host is self.host and any(p.approved for p in self.peers.values()):
+                captured = (monitor, edge, sharp, data)
+                unchanged = skip_duplicate and captured == self.previous_capture
+                self.previous_capture = captured
+                self.frame_task = None
+                if unchanged:
+                    return await send(host, "capture-unchanged", frame=frame)
                 if frame:
                     data = frame.to_bytes(4, "big") + data
-                self.frame_task = None
                 await host.send_bytes(data)
         except (RuntimeError, OSError, EOFError, TimeoutError, subprocess.SubprocessError) as exc:
             if host is self.host:
@@ -200,6 +206,7 @@ class Room:
                            reason="permission" if isinstance(exc, PermissionError) else "unavailable")
 
     async def stop_capture(self):
+        self.previous_capture = None
         if self.frame_task is not None:
             self.frame_task.cancel()
             await asyncio.gather(self.frame_task, return_exceptions=True)
@@ -236,7 +243,8 @@ class Room:
                     if screen is not None and monitor is None:
                         return await send(host, "screen-changed", frame=frame, screens=self.display_state())
                     self.frame_task = asyncio.create_task(self.capture_frame(
-                        host, fps, int(edge), message.get("sharp") is True, monitor, frame))
+                        host, fps, int(edge), message.get("sharp") is True, monitor, frame,
+                        bool(frame and message.get("skipDuplicate") is True)))
                 elif frame:
                     return await send(host, "capture-busy", frame=frame)
             return
