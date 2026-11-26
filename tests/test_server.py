@@ -99,6 +99,10 @@ class SignalingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await host.receive_bytes(timeout=5), (10).to_bytes(4, "big") + picture)
         await host.send_json({"type": "primary-frame", "frame": 11})
         self.assertEqual(await host.receive_bytes(timeout=5), (11).to_bytes(4, "big") + picture)
+        await host.send_json({"type": "primary-frame", "frame": 12, "skipDuplicate": True})
+        self.assertEqual((await self.expect(host, "capture-unchanged"))["frame"], 12)
+        await host.send_json({"type": "primary-frame", "frame": 13, "edge": 2560, "skipDuplicate": True})
+        self.assertEqual(await host.receive_bytes(timeout=5), (13).to_bytes(4, "big") + picture)
         await host.send_json({"type": "primary-frame"})
         self.assertEqual(await host.receive_bytes(timeout=5), picture)
 
