@@ -1999,7 +1999,9 @@ if (window.PhoneUpdates) {
       const result = await response.json();
       if (!response.ok) throw Error(result.error || "更新服務暫時無法使用。");
       if (result.installing) {
-        status.textContent = "已開啟安裝程式。完成後請重新開啟遠端桌面。";
+        status.textContent = platform === "Windows"
+          ? "已開啟安裝程式。安裝完成後，可從 Windows 開始功能表開啟 RemoteControl。"
+          : "已開啟安裝程式。完成後請重新開啟遠端桌面。";
         install.hidden = true;
       } else {
         status.textContent = result.available
