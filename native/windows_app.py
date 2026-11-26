@@ -133,9 +133,6 @@ def launch(start_online, port, instance, background):
         window.destroy()
 
     def attach_close():
-        if getattr(sys, "frozen", False):
-            window.native.Icon = winforms.Icon.ExtractAssociatedIcon(sys.executable)
-
         def hide_on_close(sender, args):
             if args.CloseReason == winforms.WinForms.CloseReason.UserClosing and not quitting.is_set():
                 args.Cancel = True

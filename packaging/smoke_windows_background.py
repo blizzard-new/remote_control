@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+from tempfile import TemporaryFile
 import winreg
 
 from aiohttp.test_utils import TestServer
@@ -58,6 +59,7 @@ async def smoke(executable):
         await asyncio.to_thread(proc.wait, timeout=15)
 
     async with AsyncExitStack() as stack:
+        output = stack.enter_context(TemporaryFile())
         relay = await stack.enter_async_context(TestServer(create_app()))
         address = str(relay.make_url("/")).rstrip("/")
         env = dict(os.environ, REMOTE_RELAY_URL=address)
@@ -85,7 +87,7 @@ async def smoke(executable):
             assert await phone.locator("#picture").evaluate("canvas => canvas.width") > 300
 
         try:
-            proc = subprocess.Popen([str(executable)], env=env)
+            proc = subprocess.Popen([str(executable)], env=env, stdout=output, stderr=subprocess.STDOUT)
             handle = await window_is(True)
             await connect()
             print("Packaged Windows host served its desktop to a trusted viewer.", flush=True)
@@ -106,12 +108,16 @@ async def smoke(executable):
                 startup = winreg.QueryValueEx(key, "UniwayRemote")[0]
             assert "--background" in startup
             await stop()
-            proc = subprocess.Popen(startup, env=env)
+            proc = subprocess.Popen(startup, env=env, stdout=output, stderr=subprocess.STDOUT)
             await window_is(False)
             await connect()
             await asyncio.to_thread(subprocess.run, [str(executable)], check=True, timeout=20)
             await window_is(True)
             print("The sign-in command started the host hidden and it reopened without a duplicate.")
+        except Exception:
+            output.seek(0)
+            print(output.read().decode("utf-8", errors="replace"), flush=True)
+            raise
         finally:
             if proc and proc.poll() is None:
                 await stop()
