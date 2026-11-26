@@ -20,8 +20,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check build and draft target
         run: |
-          gh run watch "$BUILD_ID" --interval 15 --exit-status
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.conclusion == "success" and .head_sha == $sha'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID/jobs?per_page=100" | jq -e '
+            [.jobs[] | select(.conclusion == "success") | .name] as $passed |
+            ["Desktop (windows-latest)", "Desktop (macos-15)", "Desktop (macos-15-intel)",
+             "Desktop (ubuntu-22.04)", "Android APK and screen capture",
+             "Control Android and verify video on Windows"] - $passed == []'
           gh release view v0.5.9 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
       - uses: actions/download-artifact@v4
         with:
