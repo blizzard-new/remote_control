@@ -43,7 +43,8 @@ def dashboard_window():
 
 
 async def window_is(visible):
-    for _ in range(100):
+    # The first launch includes extracting the bundled runtime and starting WebView2.
+    for _ in range(300):
         handle, actual = await asyncio.to_thread(dashboard_window)
         if handle and actual == visible:
             return handle
