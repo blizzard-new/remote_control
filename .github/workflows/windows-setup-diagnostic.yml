@@ -1,0 +1,66 @@
+name: Verify Windows 0.5.7 Setup
+on:
+  push:
+    branches: [test/windows-setup-057]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download and run the published installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'Uniway Setup Verification'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $setup = Join-Path $root 'RemoteControl-Setup-Windows-x64.exe'
+          $portable = Join-Path $root 'RemoteControl-Windows-x64.exe'
+          $base = 'https://github.com/blizzard-new/remote_control/releases/download/v0.5.7'
+          Invoke-WebRequest "$base/RemoteControl-Setup-Windows-x64.exe" -OutFile $setup
+          Invoke-WebRequest "$base/RemoteControl-Windows-x64.exe" -OutFile $portable
+          $sha = (Get-FileHash -Path $setup -Algorithm SHA256).Hash
+          if ($sha -ne '878eae1c7c5c503853ab4e3cc4c137e7d28be8cf374f5c66b48819112e53c70a') { throw 'Installer hash did not match the published hash.' }
+          Write-Output "Setup Authenticode status: $((Get-AuthenticodeSignature -FilePath $setup).Status)"
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          function Invoke-Setup([string]$dir, [string]$case) {
+            $log = Join-Path $root "$case.log"
+            $proc = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$dir`" /LOG=`"$log`"" -Wait -PassThru
+            Write-Output "$case Setup exit code: $($proc.ExitCode)"
+            if ($proc.ExitCode -ne 0) {
+              Get-Content $log -Tail 25
+              throw "Installation failed in $case"
+            }
+          }
+          function Start-Host([string]$path) {
+            Remove-ItemProperty -Path $runKey -Name UniwayRemote -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $path -PassThru
+            for ($i = 0; $i -lt 25; $i++) {
+              $entry = Get-ItemPropertyValue -Path $runKey -Name UniwayRemote -ErrorAction SilentlyContinue
+              if ($entry -and $entry.Contains($path)) { return $p }
+              if ($p.HasExited) { throw 'The dashboard process exited during startup.' }
+              Start-Sleep -Seconds 1
+            }
+            throw 'The dashboard did not register for sign-in startup.'
+          }
+          $first = Join-Path $root 'Fresh installed'
+          Invoke-Setup $first 'clean-install'
+          $application = Join-Path $first 'RemoteControlHost.exe'
+          if (!(Test-Path $application)) { throw 'Installed application is missing' }
+          $installed = Start-Host $application
+          Invoke-Setup $first 'reinstall-while-background-app-running'
+          if (!$installed.WaitForExit(20000)) { throw 'Setup did not stop the existing installed host.' }
+          $uninstall = Join-Path $first 'unins000.exe'
+          $remove = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw 'Could not reset the test installation.' }
+          $standalone = Start-Host $portable
+          try {
+            $second = Join-Path $root 'Installed from portable'
+            Invoke-Setup $second 'install-while-standalone-app-running'
+            Write-Output "Standalone still owns the session after Setup: $(!$standalone.HasExited)"
+          } finally {
+            Start-Process -FilePath $portable -ArgumentList '--exit' -Wait
+          }
