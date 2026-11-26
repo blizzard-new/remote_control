@@ -46,6 +46,7 @@ class Peer:
     control: bool = False
     allow_privacy: bool = False
     focus_task: object = None
+    screenshot_after: float = 0.0
 
 
 async def send(socket, kind, **fields):
@@ -77,6 +78,24 @@ class Room:
         self.connections = set()
         self.attempts = {}
         self.cleanup_tasks = set()
+        self.screenshot_task = None
+
+    @property
+    def windows_screenshots(self):
+        return getattr(self.primary_capture, "windows_screenshots", False) is True
+
+    async def take_screenshot(self, peer, mode, monitor):
+        if self.peers.get(peer.id) is not peer or not peer.control:
+            return
+        try:
+            filename = await self.primary_capture.screenshot(mode, monitor)
+        except (OSError, RuntimeError, ValueError):
+            LOG.exception("Failed to capture a local Windows screenshot")
+            message = ("無法開啟 Windows 截圖工具。" if mode == "snip" else
+                       "無法把截圖存到 Windows。請確認電腦畫面和截圖資料夾可以使用。")
+            await send(peer.socket, "screenshot-result", error=message)
+        else:
+            await send(peer.socket, "screenshot-result", mode=mode, filename=filename)
 
     def finish_disconnect(self, operation):
         # A dropped TCP connection can cancel its aiohttp request handler
@@ -243,6 +262,18 @@ class Room:
             await asyncio.gather(send(host, "approved", **fields), send(peer.socket, "approved", **fields))
         elif kind == "signal" and peer.approved and isinstance(message.get("data"), dict):
             await send(peer.socket, "signal", id=peer.id, data=message["data"])
+        elif kind == "screenshot":
+            mode, screen = message.get("mode"), message.get("screen")
+            if not (peer.control and self.windows_screenshots and mode in ("save", "snip")):
+                return await send(peer.socket, "screenshot-result", error="這個連線無法在 Windows 截圖。")
+            monitor = self.monitors.get(screen) if isinstance(screen, str) else None
+            if screen is not None and monitor is None:
+                return await send(peer.socket, "screenshot-result", error="選取的螢幕已離線。")
+            now = monotonic()
+            if now < peer.screenshot_after or (self.screenshot_task and not self.screenshot_task.done()):
+                return await send(peer.socket, "screenshot-result", error="請稍候再截圖。")
+            peer.screenshot_after = now + 0.65
+            self.screenshot_task = asyncio.create_task(self.take_screenshot(peer, mode, monitor))
         elif kind == "input" and peer.control and isinstance(message.get("event"), dict):
             try:
                 event = message["event"]
@@ -307,7 +338,8 @@ class Room:
                 self.code = secrets.token_urlsafe(12)
                 await send(socket, "hosted", code=self.code, capabilities=self.desktop.capabilities,
                            iceServers=self.ice_servers, primaryCapture=self.primary_capture is not None,
-                           screens=self.display_state(), captureSequence=True)
+                           screens=self.display_state(), captureSequence=True,
+                           windowsScreenshots=self.windows_screenshots)
             elif (message.get("type") == "join" and self.host is not None and
                   matches(message.get("code"), self.code) and len(self.peers) < MAX_PEERS):
                 name = message.get("name")
@@ -474,6 +506,8 @@ def create_app(token, desktop, ice_servers=None, web_dir=WEB_DIR, *, device_stor
         await asyncio.gather(*(ws.close() for ws in list(room.connections)))
         if room.cleanup_tasks:
             await asyncio.gather(*list(room.cleanup_tasks))
+        if room.screenshot_task:
+            await room.screenshot_task
         room.release_control()
 
     app.cleanup_ctx.append(housekeeping)

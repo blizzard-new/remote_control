@@ -90,7 +90,7 @@ async def visible_phone(page):
 
 
 class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
-    async def test_scrolling_delivers_more_frames_and_restores_full_resolution(self):
+    async def test_scrolling_preserves_selected_resolution_and_uses_native_jpeg(self):
         source = Image.effect_noise((2560, 1600), 67).convert("RGB")
         draw = ImageDraw.Draw(source)
         draw.rectangle((0, 0, 780, 1600), fill="#f1f4f9")
@@ -99,7 +99,7 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
         images = [ImageChops.offset(source, 0, -i * 27) for i in range(6)]
         frames = {
             (edge, sharp): [PrimaryScreen._encode(image.copy(), edge, sharp) for image in images]
-            for edge, sharp in [(3840, True), (1920, False), (1280, False)]
+            for edge, sharp in [(3840, True), (1920, True)]
         }
         self.assertGreater(len(frames[3840, True][0]), 500000)
 
@@ -127,79 +127,74 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 laptop = await open_device(browser, desktop_site, address, "PC", "Windows", "desktop")
                 controller = os.environ.get("REMOTE_DESKTOP_PLATFORM", "Android")
                 page = await open_device(browser, viewer_site, address, "Controller", controller, "viewer")
+                await laptop.evaluate("""() => {
+                    const original = window.createImageBitmap;
+                    window.hostDecodes = 0;
+                    window.createImageBitmap = (...args) => {
+                        window.hostDecodes++;
+                        return original(...args);
+                    };
+                }""")
                 await page.evaluate("""() => {
+                    localStorage.setItem('rc-video-smooth', 'on');
                     const drawImage = CanvasRenderingContext2D.prototype.drawImage;
                     window.painted = [];
                     CanvasRenderingContext2D.prototype.drawImage = function(...args) {
-                        if (this.canvas.id === 'picture') window.painted.push({
-                            width: this.canvas.width,
-                            time: performance.now()
-                        });
+                        if (this.canvas.id === 'picture') window.painted.push(this.canvas.width);
                         return drawImage.apply(this, args);
                     };
                 }""")
                 await page.locator("#remembered button").first.click()
                 await page.locator("#action-connect").click()
                 canvas = page.locator("#picture")
-                full_width = "() => document.querySelector('#picture').width === 2560"
-                await page.wait_for_function(full_width, timeout=25000)
-                async def smooth(enabled):
-                    await page.locator("#smooth-scroll").evaluate("""(field, value) => {
-                        field.checked = value;
-                        field.dispatchEvent(new Event('change'));
-                    }""", enabled)
-
-                await smooth(False)
+                await page.wait_for_function("() => document.querySelector('#picture').width === 2560", timeout=25000)
 
                 async def scroll():
                     return await canvas.evaluate("""async (canvas) => {
                         const rect = canvas.getBoundingClientRect();
-                        const start = performance.now();
+                        const start = painted.length;
                         const timer = setInterval(() => canvas.dispatchEvent(new WheelEvent('wheel', {
                             bubbles: true, cancelable: true, deltaY: 54,
                             clientX: rect.left + rect.width / 2,
                             clientY: rect.top + rect.height / 2
                         })), 38);
-                        await new Promise(done => setTimeout(done, 3200));
+                        await new Promise(done => setTimeout(done, 3000));
                         clearInterval(timer);
-                        return {
-                            widths: painted.filter(p => p.time >= start + 450).map(p => p.width),
-                            stats: document.querySelector('#stats').textContent
-                        };
+                        return painted.slice(start);
                     }""")
 
-                baseline = (await scroll())["widths"]
-                self.assertGreater(len(baseline), 0)
-                self.assertEqual(set(baseline), {2560})
-                await smooth(True)
-                optimized = await scroll()
-                small_frames = [width for width in optimized["widths"] if width < 2560]
-                print(f"{controller} scrolling produced {len(small_frames)} live frames from "
-                      f"{len(baseline)} baseline frames over 2.75s.", flush=True)
-                self.assertGreaterEqual(len(small_frames), max(6, len(baseline) * 2))
-                if os.environ.get("REMOTE_BROWSER", "chromium") == "chromium":
-                    self.assertIn("VP8", optimized["stats"])
+                full = await scroll()
+                self.assertGreaterEqual(len(full), 3)
+                self.assertEqual(set(full), {2560})
                 self.assertFalse(native.wheel.empty())
-                await page.wait_for_function(full_width, timeout=20000)
-                await expect(page.locator("#first-picture")).to_be_hidden()
-                await laptop.evaluate("window.VideoEncoder = undefined")
-                fallback = await scroll()
-                self.assertIn("JPEG", fallback["stats"])
-                self.assertGreaterEqual(fallback["widths"].count(1280), max(6, len(baseline) * 2))
-                await page.wait_for_function(full_width, timeout=20000)
-                print(f"{controller} scrolling: {len(baseline)} full JPEG frames, "
-                      f"{len(small_frames)} optimized frames, {fallback['widths'].count(1280)} "
-                      "adaptive JPEG frames over 2.75s, restored 2560 pixels.")
+                await expect(page.locator("#smooth-scroll")).to_have_count(0)
+                await page.locator("#quality").evaluate("""(field) => {
+                    field.value = '1920';
+                    field.dispatchEvent(new Event('change'));
+                }""")
+                await page.wait_for_function("() => document.querySelector('#picture').width === 1920", timeout=25000)
+                lower = await scroll()
+                self.assertGreaterEqual(len(lower), 3)
+                self.assertEqual(set(lower), {1920})
+                self.assertEqual(await laptop.evaluate("window.hostDecodes"), 0)
+                print(f"{controller}: {len(full)} frames at 2560px and {len(lower)} at 1920px over 3s each. "
+                      "The host did not decode either stream.", flush=True)
 
     async def test_phone_switches_monitors_and_clicks_the_visible_screen(self):
         primary = Monitor("main", (0, 0, 640, 360), True)
         hdmi = Monitor("hdmi", (-480, 0, 0, 640))
 
         class TwoScreens(Screen):
+            windows_screenshots = True
+            screenshots = []
             monitors = [primary, hdmi]
 
             def displays(self):
                 return self.monitors
+
+            async def screenshot(self, mode, monitor):
+                self.screenshots.append((mode, monitor.id))
+                return "Uniway_screenshot.png" if mode == "save" else None
 
             async def frame(self, *, edge, sharp, monitor=None):
                 if monitor is None:
@@ -244,6 +239,26 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                     while (event := await native.events.get())["kind"] != "button":
                         pass
                 self.assertEqual(event["monitor"], "hdmi")
+                menu = phone.locator("#screenshot-menu summary")
+                notice = phone.locator("#screenshot-status")
+                await menu.click()
+                await phone.locator("#save-screenshot").click()
+                await expect(notice).to_contain_text("Uniway_screenshot.png")
+                await asyncio.sleep(0.7)
+                await menu.click()
+                await phone.locator("#open-snip").click()
+                await expect(notice).to_contain_text("請在遠端 Windows 畫面框選")
+                await asyncio.sleep(0.7)
+                await phone.keyboard.press("Control+Alt+Shift+S")
+                await expect(notice).to_contain_text("Uniway_screenshot.png")
+                expected = [("save", "hdmi"), ("snip", "hdmi"), ("save", "hdmi")]
+                if os.environ.get("REMOTE_BROWSER", "chromium") == "chromium":
+                    await asyncio.sleep(0.7)
+                    await notice.evaluate("(notice) => { notice.textContent = ''; }")
+                    await phone.keyboard.press("PrintScreen")
+                    await expect(notice).to_contain_text("Uniway_screenshot.png")
+                    expected.append(("save", "hdmi"))
+                self.assertEqual(screens.screenshots, expected)
                 screens.monitors = [primary]
                 await expect(button).to_be_hidden()
                 await phone.wait_for_function("() => document.querySelector('#picture').width === 640")

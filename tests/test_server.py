@@ -8,6 +8,7 @@ from unittest.mock import patch
 from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
+from native.monitors import Monitor
 from server.app import create_app
 from server.__main__ import ice_configuration
 
@@ -100,6 +101,46 @@ class SignalingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await host.receive_bytes(timeout=5), (11).to_bytes(4, "big") + picture)
         await host.send_json({"type": "primary-frame"})
         self.assertEqual(await host.receive_bytes(timeout=5), picture)
+
+    async def test_screenshot_requires_control_and_a_known_monitor(self):
+        display = Monitor("hdmi", (-1024, 0, 0, 768))
+        calls = []
+
+        class Capture:
+            windows_screenshots = True
+
+            def displays(self):
+                return [display]
+
+            async def stop(self):
+                pass
+
+            async def screenshot(self, mode, monitor):
+                calls.append((mode, monitor))
+                return "Uniway_example.png"
+
+        self.client = TestClient(TestServer(create_app(
+            "admin", self.desktop, self.ice, Path(self.assets.name), primary_capture=Capture())))
+        await self.client.start_server()
+        self.addAsyncCleanup(self.client.close)
+        host, code = await self.host()
+        viewer, view_id = await self.join(host, code)
+        controller, control_id = await self.join(host, code)
+        await self.approve(host, viewer, view_id, False)
+        await self.approve(host, controller, control_id, True)
+
+        async def screenshot(peer, screen, mode="save"):
+            await host.send_json({"type": "screenshot", "id": peer, "screen": screen, "mode": mode})
+
+        await screenshot(view_id, "hdmi")
+        self.assertIn("error", await self.expect(viewer, "screenshot-result"))
+        await screenshot(control_id, "disconnected")
+        self.assertIn("error", await self.expect(controller, "screenshot-result"))
+        self.assertEqual(calls, [])
+        await screenshot(control_id, "hdmi")
+        result = await self.expect(controller, "screenshot-result")
+        self.assertEqual(result, {"type": "screenshot-result", "mode": "save", "filename": "Uniway_example.png"})
+        self.assertEqual(calls, [("save", display)])
 
     async def test_two_viewers_and_one_controller(self):
         host, code = await self.host()

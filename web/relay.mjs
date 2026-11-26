@@ -1,4 +1,4 @@
-import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, MOTION_PACKET, MOTION_TYPE, imagePiece } from "./video.mjs";
+import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, imagePiece } from "./video.mjs";
 // The invitation stays on the two devices. Only its hash identifies a relay room.
 // Each direction has a separate AES-GCM key and an ordered packet counter.
 const utf8 = new TextEncoder();
@@ -235,19 +235,6 @@ export class Relay {
       peer.acknowledge?.();
     }
   }
-
-  sendMotion(id, packet) {
-    const peer = this.peers.get(id);
-    if (!peer || this.closed || this.ws.readyState !== 1 ||
-        peer.pending > 1 || this.ws.bufferedAmount > MOTION_PACKET ||
-        packet.length > MOTION_PACKET) return false;
-    const now = performance.now();
-    if (now < (this.mediaDue || 0)) return false;
-    this.mediaDue = now + (packet.length + 64) / 3200;
-    this.send(id, MOTION_TYPE, packet);
-    return true;
-  }
-
   async sendImage(id, image, parts) {
     const peer = this.peers.get(id);
     if (

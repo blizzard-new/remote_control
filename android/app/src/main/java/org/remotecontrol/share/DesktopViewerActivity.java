@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.net.http.SslError;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.webkit.*;
 import android.widget.*;
@@ -44,6 +45,10 @@ public class DesktopViewerActivity extends Activity {
     @Override public void onWindowFocusChanged(boolean focus) {
         super.onWindowFocusChanged(focus);
         if (focus && immersive) fullScreen(true);
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        return (viewer != null && viewer.routeScreenshotKey(event)) || super.dispatchKeyEvent(event);
     }
 
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -122,6 +127,9 @@ public class DesktopViewerActivity extends Activity {
                 @JavascriptInterface public void setActive(boolean active) {
                     runOnUiThread(() -> { if (viewer == view) fullScreen(active); });
                 }
+                @JavascriptInterface public void setScreenshotEnabled(boolean enabled) {
+                    runOnUiThread(() -> { if (viewer == view) view.setScreenshotEnabled(enabled); });
+                }
             }, "ViewerScreen");
         }
         settings.setSupportZoom(false);
@@ -133,8 +141,8 @@ public class DesktopViewerActivity extends Activity {
             @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
                 if (bundled && DesktopOrigin.matches(origin,request.getUrl().toString())) {
                     String path=request.getUrl().getPath();
-                    if(path!=null && (path.matches("/icons/[a-z0-9-]+\\.svg") || path.matches("/(online\\.html|dashboard\\.css|style\\.css|online\\.mjs|relay\\.mjs|video\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)"))) {
-                        String mime=path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":path.endsWith("svg")?"image/svg+xml":"text/javascript";
+                    if(path!=null && (path.equals("/icons/uniway-remote.png") || path.matches("/icons/[a-z0-9-]+\\.svg") || path.matches("/(online\\.html|dashboard\\.css|style\\.css|online\\.mjs|relay\\.mjs|video\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)"))) {
+                        String mime=path.endsWith("png")?"image/png":path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":path.endsWith("svg")?"image/svg+xml":"text/javascript";
                         try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.singletonMap("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src wss:; media-src blob:; img-src 'self' data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'"),
                                 getAssets().open(path.substring(1))); }
                         catch(java.io.IOException unavailable) { /* fall through to the denied response */ }

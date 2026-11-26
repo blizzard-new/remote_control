@@ -85,9 +85,10 @@ def run(start_online, port, *, background=False, exit_only=False):
 def launch(start_online, port, instance, background):
     import pystray
     import webview
-    from PIL import Image, ImageDraw
+    from PIL import Image
     from aiohttp import web
     from webview.platforms import winforms
+    from server.app import WEB_DIR
 
     if winforms.renderer != "edgechromium":
         raise RuntimeError("請先安裝 Microsoft Edge WebView2 Runtime，才能使用 Windows 版 Uniway Remote。")
@@ -132,6 +133,9 @@ def launch(start_online, port, instance, background):
         window.destroy()
 
     def attach_close():
+        if getattr(sys, "frozen", False):
+            window.native.Icon = winforms.Icon.ExtractAssociatedIcon(sys.executable)
+
         def hide_on_close(sender, args):
             if args.CloseReason == winforms.WinForms.CloseReason.UserClosing and not quitting.is_set():
                 args.Cancel = True
@@ -140,11 +144,8 @@ def launch(start_online, port, instance, background):
         window.native.FormClosing += hide_on_close
 
     window.events.before_show += attach_close
-    image = Image.new("RGBA", (64, 64))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((2, 2, 61, 61), 13, fill="#2378d4")
-    draw.rounded_rectangle((12, 14, 52, 42), 4, outline="white", width=4)
-    draw.line((25, 50, 39, 50), width=4, fill="white")
+    with Image.open(WEB_DIR / "icons" / "uniway-remote.png") as artwork:
+        image = artwork.resize((64, 64), Image.Resampling.LANCZOS)
     tray = pystray.Icon("UniwayRemote", image, "Uniway Remote",
                         pystray.Menu(pystray.MenuItem("開啟 Uniway Remote", open_window, default=True),
                                      pystray.MenuItem("結束遠端待命", quit_app)))

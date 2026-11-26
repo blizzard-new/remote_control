@@ -3,6 +3,6 @@ Type=Application
 Name=Uniway Remote
 Comment=Connect to paired desktops and Android devices
 Exec=/usr/bin/uniway-remote
-Icon=video-display
+Icon=uniway-remote
 Terminal=false
 Categories=Network;RemoteAccess;

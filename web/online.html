@@ -7,6 +7,7 @@
       content="width=device-width,initial-scale=1,interactive-widget=resizes-content"
     />
     <title>Uniway Remote · 裝置中心</title>
+    <link rel="icon" href="/icons/uniway-remote.png" type="image/png" />
     <link rel="stylesheet" href="/dashboard.css" />
     <script type="module" src="/online.mjs"></script>
   </head>
@@ -14,7 +15,7 @@
     <div class="shell">
       <aside class="rail">
         <div class="wordmark">
-          <span class="word-icon"><i data-i="cast"></i></span
+          <span class="word-icon"><img src="/icons/uniway-remote.png" alt="" /></span
           ><span>Uniway <b>Remote</b></span>
         </div>
         <nav aria-label="主選單">
@@ -32,7 +33,7 @@
         </nav>
         <div class="rail-bottom">
           <i data-i="shield-check"></i
-          ><span>Uniway Remote<small>版本 0.5.8</small></span>
+          ><span>Uniway Remote<small>版本 0.5.9</small></span>
         </div>
       </aside>
       <header class="top">
@@ -186,6 +187,7 @@
     <section id="stage" hidden>
       <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
       <p id="first-picture" role="status" hidden></p>
+      <p id="screenshot-status" role="status" hidden></p>
       <div id="share-request" hidden>
         <p id="share-requester"></p>
         <button id="switch-share">切換為分享手機</button>
@@ -208,6 +210,14 @@
         <button id="keyboard-button" hidden aria-label="手機鍵盤">
           <i data-i="keyboard"></i>
         </button>
+        <details id="screenshot-menu" hidden>
+          <summary aria-label="在 Windows 截圖">截圖</summary>
+          <div class="screenshot-options">
+            <button id="save-screenshot">儲存目前螢幕 PNG</button>
+            <button id="open-snip">開啟 Windows 截圖工具</button>
+            <p>鍵盤也可按 Ctrl + Alt + Shift + S</p>
+          </div>
+        </details>
         <details id="video-menu">
           <summary aria-label="畫質與幀率"><i data-i="sliders"></i></summary>
           <div class="video-options">
@@ -230,9 +240,6 @@
               <option value="30">30 fps</option>
               <option value="60">60 fps</option>
             </select>
-            <label id="smooth-scroll-option" hidden>
-              <input id="smooth-scroll" type="checkbox" checked /> 捲動時優先流暢
-            </label>
             <p id="quality-compat" hidden>
               舊版分享端僅支援部分畫質設定。請參考下方實收尺寸。
             </p>

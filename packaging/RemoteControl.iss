@@ -1,13 +1,15 @@
 [Setup]
 AppId={{144B189C-1153-4E77-A53D-47B86019CB8F}
 AppName=RemoteControl
-AppVersion=0.5.8
+AppVersion=0.5.9
 DefaultDirName={localappdata}\Programs\RemoteControl
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 DisableProgramGroupPage=yes
 OutputDir=..\dist
 OutputBaseFilename=RemoteControl-Setup-Windows-x64
+SetupIconFile=uniway-remote.ico
+UninstallDisplayIcon={app}\RemoteControlHost.exe
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=no

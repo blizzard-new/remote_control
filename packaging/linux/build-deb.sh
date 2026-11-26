@@ -7,6 +7,7 @@ trap 'rm -rf "$stage"' EXIT
 
 install -D -m755 dist/RemoteControlHost "$stage/usr/bin/uniway-remote"
 install -D -m644 packaging/linux/uniway-remote.desktop "$stage/usr/share/applications/uniway-remote.desktop"
+install -D -m644 web/icons/uniway-remote.png "$stage/usr/share/icons/hicolor/256x256/apps/uniway-remote.png"
 install -D -m644 README.md "$stage/usr/share/doc/uniway-remote/README.md"
 mkdir "$stage/DEBIAN"
 cat > "$stage/DEBIAN/control" <<EOF

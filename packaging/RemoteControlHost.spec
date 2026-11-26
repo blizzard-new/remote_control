@@ -16,10 +16,12 @@ if sys.platform == "darwin":
               name="RemoteControl", console=False, upx=False)
     files = COLLECT(exe, analysis.binaries, analysis.datas, name="RemoteControl", upx=False)
     app = BUNDLE(files, name="RemoteControl.app", bundle_identifier="org.remotecontrol.desktop",
-                 version="0.5.8", info_plist={"NSHighResolutionCapable": True})
+                 version="0.5.9", icon=str(project / "packaging" / "uniway-remote.icns"),
+                 info_plist={"NSHighResolutionCapable": True})
 elif sys.platform == "win32":
     exe = EXE(archive, analysis.scripts, analysis.binaries, analysis.datas, [],
-              name="RemoteControlHost", console=True, hide_console="hide-early", upx=False)
+              name="RemoteControlHost", console=True, hide_console="hide-early", upx=False,
+              icon=str(project / "packaging" / "uniway-remote.ico"))
 else:
     exe = EXE(archive, analysis.scripts, analysis.binaries, analysis.datas, [],
               name="RemoteControlHost", console=True, upx=False)

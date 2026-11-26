@@ -4,6 +4,7 @@ import android.app.Instrumentation;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -18,7 +19,7 @@ import static org.junit.Assert.*;
 public class TrackpadWebViewTest {
     private final Instrumentation test = InstrumentationRegistry.getInstrumentation();
 
-    @Test public void oneNativeEventReachesThePageOnceWithBothFractionalAxes() throws Exception {
+    @Test public void routesTrackpadAndApprovedScreenshotKeyToThePageOnce() throws Exception {
         Intent intent = new Intent(test.getTargetContext(), LanViewerActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         DesktopViewerActivity activity = (DesktopViewerActivity) test.startActivitySync(intent);
         AtomicReference<TrackpadWebView> current = new AtomicReference<>();
@@ -39,6 +40,7 @@ public class TrackpadWebViewTest {
                 view.loadDataWithBaseURL(origin + "/", """
                         <meta name="viewport" content="width=device-width,initial-scale=1">
                         <script>window.events=[];window.domWheel=0;addEventListener('wheel',()=>domWheel++);
+                        window.screenshots=0;window.remoteControlAndroidScreenshot=()=>{screenshots++;return true}
                         window.remoteControlAndroidWheel=(...args)=>{events.push(args);return true}</script>
                         """, "text/html", "utf-8", origin + "/");
             });
@@ -57,11 +59,19 @@ public class TrackpadWebViewTest {
                         new MotionEvent.PointerProperties[]{properties}, new MotionEvent.PointerCoords[]{axes},
                         0, 0, 1, 1, 0, 0, InputDevice.SOURCE_MOUSE, 0);
                 try { assertTrue(view.onGenericMotionEvent(wheel)); } finally { wheel.recycle(); }
+                KeyEvent printDown = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SYSRQ);
+                KeyEvent printUp = new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SYSRQ);
+                assertFalse(view.routeScreenshotKey(printDown));
+                view.setScreenshotEnabled(true);
+                assertTrue(view.routeScreenshotKey(printDown));
+                assertTrue(view.routeScreenshotKey(printUp));
+                view.setScreenshotEnabled(false);
+                assertFalse(view.routeScreenshotKey(printUp));
             });
             CountDownLatch checked = new CountDownLatch(1);
             AtomicReference<String> result = new AtomicReference<>();
             test.runOnMainSync(() -> current.get().evaluateJavascript("""
-                    events.length===1 && domWheel===0 && events[0][0]===0.5 && events[0][1]===0.5 &&
+                    screenshots===1 && events.length===1 && domWheel===0 && events[0][0]===0.5 && events[0][1]===0.5 &&
                     events[0][2]>0 && events[0][2]<1 && events[0][3]<0 && events[0][3]>-1
                     """, value -> { result.set(value); checked.countDown(); }));
             assertTrue(checked.await(5, TimeUnit.SECONDS));

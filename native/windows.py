@@ -54,7 +54,7 @@ SCAN_CODES = {
     "NumpadEnter": 0x11C, "ControlRight": 0x11D, "NumpadDivide": 0x135, "AltRight": 0x138,
     "Home": 0x147, "ArrowUp": 0x148, "PageUp": 0x149, "ArrowLeft": 0x14B, "ArrowRight": 0x14D,
     "End": 0x14F, "ArrowDown": 0x150, "PageDown": 0x151, "Insert": 0x152, "Delete": 0x153,
-    "MetaLeft": 0x15B, "MetaRight": 0x15C, "ContextMenu": 0x15D,
+    "PrintScreen": 0x137, "MetaLeft": 0x15B, "MetaRight": 0x15C, "ContextMenu": 0x15D,
 }
 for first, row in ((0x10, "QWERTYUIOP"), (0x1E, "ASDFGHJKL"), (0x2C, "ZXCVBNM")):
     SCAN_CODES.update({f"Key{char}": first + index for index, char in enumerate(row)})

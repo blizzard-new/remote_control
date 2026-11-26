@@ -30,7 +30,7 @@ test("only complete, bounded, ordered relay images reach the decoder", () => {
   assert.equal(receiver.image, null);
 });
 
-test("scrolling can cancel a detailed frame without waiting on its acknowledgment", async () => {
+test("switching monitors can cancel a frame without waiting on its acknowledgment", async () => {
   const relay = new Relay("http://127.0.0.1", true, "", {});
   relay.ws = { readyState: 1, bufferedAmount: 0 };
   const peer = {};

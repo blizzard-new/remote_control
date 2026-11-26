@@ -1,13 +1,40 @@
 """Wire validation and Win32 event encoding, including fractional trackpad input."""
 
 import ctypes
+import os
 import sys
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
+
+from PIL import Image
 
 from native.desktop import Desktop, validate_event
 from native.monitors import Monitor
-from native.windows import Input, WindowsBackend
+from native.screen import _save_windows_screenshot
+from native.windows import Input, WindowsBackend, windows_monitors
+
+
+class WindowsScreenshotTests(unittest.TestCase):
+    def test_saves_the_selected_screen_at_its_native_resolution(self):
+        monitor = Monitor("hdmi", (-1024, 0, 0, 768))
+        with TemporaryDirectory() as tmp, patch("native.screen._screenshots_folder", return_value=Path(tmp)), \
+                patch("native.screen._windows_grab", return_value=Image.new("RGB", monitor.size, "#00fa7c")) as grab:
+            filename = _save_windows_screenshot(monitor)
+            grab.assert_called_once_with(monitor)
+            with Image.open(Path(tmp) / filename) as screenshot:
+                self.assertEqual((screenshot.format, screenshot.size), ("PNG", (1024, 768)))
+                self.assertEqual(screenshot.getpixel((5, 5)), (0, 250, 124))
+
+    @unittest.skipUnless(sys.platform == "win32" and os.environ.get("REMOTE_TEST_WINDOWS_CURTAIN") == "1",
+                         "requires an opted-in interactive Windows desktop")
+    def test_windows_captures_the_display_in_physical_pixels(self):
+        monitor = windows_monitors()[0]
+        with TemporaryDirectory() as tmp, patch("native.screen._screenshots_folder", return_value=Path(tmp)):
+            filename = _save_windows_screenshot(monitor)
+            with Image.open(Path(tmp) / filename) as screenshot:
+                self.assertEqual((screenshot.format, screenshot.size), ("PNG", monitor.size))
 
 
 class NativeInputTests(unittest.TestCase):

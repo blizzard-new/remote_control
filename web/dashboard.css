@@ -125,13 +125,14 @@ h2 {
   font-weight: 430;
 }
 .word-icon {
-  background: #227ee4;
-  color: white;
-  border-radius: 10px;
   width: 39px;
   height: 39px;
-  display: grid;
-  place-items: center;
+  flex: none;
+}
+.word-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .rail nav {
   display: grid;
@@ -476,7 +477,8 @@ summary {
 .viewer-bar summary {
   list-style: none;
 }
-.video-options {
+.video-options,
+.screenshot-options {
   position: absolute;
   right: 0;
   top: 40px;
@@ -486,12 +488,32 @@ summary {
   border-radius: 12px;
   box-shadow: 0 10px 35px #12233738;
 }
+.screenshot-options {
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+}
+.screenshot-options p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+#screenshot-status {
+  position: absolute;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  width: max-content;
+  padding: 9px 13px;
+  border-radius: 8px;
+  background: #1e2e40ed;
+  color: white;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
 .video-options label {
   margin-top: 9px;
-}
-#smooth-scroll {
-  width: auto;
-  margin: 0 3px 0 0;
 }
 .video-options p {
   font-size: 12px;

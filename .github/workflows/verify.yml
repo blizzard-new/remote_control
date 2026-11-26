@@ -73,7 +73,7 @@ jobs:
       - if: runner.os == 'Windows'
         name: Verify the installed Windows version after upgrading
         shell: pwsh
-        run: ./packaging/smoke_windows_setup.ps1 dist/RemoteControl-Setup-Windows-x64.exe 0.5.8
+        run: ./packaging/smoke_windows_setup.ps1 dist/RemoteControl-Setup-Windows-x64.exe 0.5.9
       - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
@@ -108,7 +108,7 @@ jobs:
           python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
           python -c "import ctypes; lib=ctypes.CDLL('dist/RemoteControl.app/Contents/Frameworks/libRemoteControlDisplay.dylib'); assert lib.rc_capture_jpeg_for_profile and lib.rc_capture_jpeg and lib.rc_free_image and lib.rc_focused_editable"
           codesign --verify --deep --strict dist/RemoteControl.app
-          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.8 "RemoteControl-macOS-$(uname -m).pkg"
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.9 "RemoteControl-macOS-$(uname -m).pkg"
           ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

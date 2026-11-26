@@ -1,6 +1,7 @@
 """Capture an approved desktop viewer's selected display."""
 import asyncio
 import ctypes
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 import platform
@@ -39,9 +40,8 @@ class PrimaryScreen:
                 with Image.open(path) as image:
                     return self._encode(image, edge, sharp)
         if sys.platform == "win32":
-            user = ctypes.windll.user32
-            if hasattr(user, "SetThreadDpiAwarenessContext"):
-                user.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+            with _windows_grab(monitor) as image:
+                return self._encode(image, edge, sharp)
         if sys.platform.startswith("linux"):
             import os
             if not os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
@@ -86,6 +86,65 @@ class PrimaryScreen:
         async with self.lock:
             return await asyncio.to_thread(self._frame, edge, sharp, monitor)
 
+    @property
+    def windows_screenshots(self):
+        return sys.platform == "win32"
+
+    async def screenshot(self, mode, monitor=None):
+        if not self.windows_screenshots:
+            raise RuntimeError("此功能需要 Windows。")
+        if mode == "snip":
+            import os
+            await asyncio.to_thread(os.startfile, "ms-screenclip:")
+            return None
+        async with self.lock:
+            return await asyncio.to_thread(_save_windows_screenshot, monitor)
+
     async def stop(self):
-        # Each screenshot has a bounded lifetime and runs only on demand.
         pass
+
+
+def _windows_grab(monitor):
+    user = ctypes.windll.user32
+    if hasattr(user, "SetThreadDpiAwarenessContext"):
+        user.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    return ImageGrab.grab(bbox=monitor.bounds if monitor else None,
+                          all_screens=monitor is not None, include_layered_windows=True)
+
+
+def _screenshots_folder():
+    import uuid
+
+    # FOLDERID_Screenshots honors redirected Pictures folders, including OneDrive.
+    identifier = (ctypes.c_ubyte * 16).from_buffer_copy(
+        uuid.UUID("b7bede81-df94-4682-a7d8-57a52620b86f").bytes_le)
+    value = ctypes.c_wchar_p()
+    shell = ctypes.WinDLL("shell32")
+    shell.SHGetKnownFolderPath.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p),
+    ]
+    free = ctypes.WinDLL("ole32").CoTaskMemFree
+    free.argtypes = [ctypes.c_void_p]
+    free.restype = None
+    try:
+        if shell.SHGetKnownFolderPath(ctypes.byref(identifier), 0x4000, None, ctypes.byref(value)) == 0 and value.value:
+            return Path(value.value)
+    finally:
+        if value:
+            free(ctypes.cast(value, ctypes.c_void_p))
+    return Path.home() / "Pictures" / "Screenshots"
+
+
+def _save_windows_screenshot(monitor):
+    directory = _screenshots_folder()
+    directory.mkdir(parents=True, exist_ok=True)
+    name = datetime.now().strftime("Uniway_%Y-%m-%d_%H-%M-%S_%f.png")
+    path = directory / name
+    with _windows_grab(monitor) as image, path.open("xb") as output:
+        try:
+            image.save(output, "PNG")
+        except (OSError, ValueError):
+            output.close()
+            path.unlink(missing_ok=True)
+            raise
+    return name

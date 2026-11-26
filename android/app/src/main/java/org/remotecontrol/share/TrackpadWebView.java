@@ -2,6 +2,7 @@ package org.remotecontrol.share;
 
 import android.content.Context;
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 import android.webkit.WebView;
@@ -13,6 +14,7 @@ final class TrackpadWebView extends WebView {
     private final ViewConfiguration config;
     private int documentVersion;
     private boolean committed;
+    private boolean screenshotEnabled, screenshotHeld;
 
     TrackpadWebView(Context context, String origin) {
         super(context);
@@ -23,10 +25,29 @@ final class TrackpadWebView extends WebView {
     void navigationStarted() {
         documentVersion++;
         committed = false;
+        setScreenshotEnabled(false);
     }
 
     void navigationCommitted(String address) {
         committed = DesktopOrigin.matches(origin, address);
+    }
+
+    void setScreenshotEnabled(boolean enabled) {
+        screenshotEnabled = enabled;
+        screenshotHeld = false;
+    }
+
+    boolean routeScreenshotKey(KeyEvent event) {
+        if (!screenshotEnabled || !committed || !DesktopOrigin.matches(origin, getUrl()) ||
+                event.getKeyCode() != KeyEvent.KEYCODE_SYSRQ ||
+                (event.getAction() != KeyEvent.ACTION_DOWN && event.getAction() != KeyEvent.ACTION_UP))
+            return false;
+        boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
+        if (!event.isCanceled() && !screenshotHeld && event.getRepeatCount() == 0)
+            evaluateJavascript("location.origin===" + JSONObject.quote(origin) +
+                    " && window.remoteControlAndroidScreenshot?.()", null);
+        screenshotHeld = down;
+        return true;
     }
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
