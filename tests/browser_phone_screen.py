@@ -1,4 +1,5 @@
 import asyncio
+from base64 import b64decode
 import json
 import os
 import secrets
@@ -402,18 +403,28 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 await phone.wait_for_function("() => document.querySelector('#picture').width === 2560", timeout=30000)
                 await phone.locator("#video-menu summary").click()
                 await expect(phone.locator("#stats")).to_contain_text("2560 × 1600")
-                read = """() => Array.from(document.querySelector('#picture').getContext('2d').getImageData(32,32,256,64).data)"""
-                def sample_image(payload):
-                    return Image.frombytes("RGBA", (256, 64), bytes(payload)).convert("RGB")
+                read = """() => {
+                    const sample = document.createElement('canvas');
+                    sample.width = 256;
+                    sample.height = 64;
+                    sample.getContext('2d').drawImage(document.querySelector('#picture'), 32, 32, 256, 64, 0, 0, 256, 64);
+                    return sample.toDataURL('image/png').split(',')[1];
+                }"""
+
+                async def sample_image():
+                    pixels = b64decode(await phone.evaluate(read))
+                    with Image.open(BytesIO(pixels)) as image:
+                        return image.convert("RGB")
+
                 def text_error(image):
                     return sum(ImageStat.Stat(ImageChops.difference(source.crop(sample), image)).mean)/3
-                sharp_pixels = sample_image(await phone.evaluate(read))
+                sharp_pixels = await sample_image()
                 self.assertGreater(len(encoded[3840, True]), 340000)
                 await phone.locator("#detail-quality").select_option("balanced")
                 await desktop.wait_for_function("() => window.testCaptureRequest?.sharp === false")
                 async with asyncio.timeout(25):
                     while True:
-                        standard_pixels = sample_image(await phone.evaluate(read))
+                        standard_pixels = await sample_image()
                         if text_error(standard_pixels) > text_error(sharp_pixels) + 2:
                             break
                         await asyncio.sleep(0.1)
