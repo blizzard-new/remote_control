@@ -249,7 +249,7 @@ export class Relay {
     return 0;
   }
 
-  async sendImage(id, image, parts) {
+  async sendImage(id, image, parts, patch = false) {
     const peer = this.peers.get(id);
     if (
       !peer ||
@@ -262,7 +262,7 @@ export class Relay {
     peer.imageCancelled = false;
     const fragmented = image.length > SINGLE_IMAGE;
     let receipt, timer;
-    if (fragmented) {
+    if (fragmented || patch) {
       peer.imageSerial = ((peer.imageSerial || 0) + 1) >>> 0 || 1;
       receipt = new Promise((done) => {
         peer.acknowledge = done;
@@ -286,14 +286,18 @@ export class Relay {
           if (!delay) break;
           await new Promise((done) => setTimeout(done, delay));
         }
-        await this.send(
-          id,
-          fragmented ? 4 : 2,
-          fragmented ? imagePiece(image, offset, peer.imageSerial) : image,
-        );
+        if (patch) {
+          const packet = new Uint8Array(4 + image.length);
+          new DataView(packet.buffer).setUint32(0, peer.imageSerial);
+          packet.set(image, 4);
+          await this.send(id, 6, packet);
+        } else {
+          await this.send(id, fragmented ? 4 : 2,
+            fragmented ? imagePiece(image, offset, peer.imageSerial) : image);
+        }
       }
       // A slow downstream must finish one large frame before another one is queued.
-      if (fragmented && !peer.imageCancelled && this.peers.get(id) === peer) {
+      if (receipt && !peer.imageCancelled && this.peers.get(id) === peer) {
         timer = setTimeout(peer.acknowledge, 25000);
         if (await receipt) return peer.imageSerial;
       }

@@ -94,7 +94,7 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
     async def test_scrolling_preserves_selected_resolution_and_uses_native_jpeg(self):
         source = Image.effect_noise((2560, 1760), 67).convert("RGB")
         draw = ImageDraw.Draw(source)
-        draw.rectangle((0, 0, 780, 1760), fill="#f1f4f9")
+        draw.rectangle((0, 0, 2030, 1760), fill="#f1f4f9")
         for y in range(25, 1760, 44):
             draw.text((32, y), f"{y:04}   Desktop scrolling fixture", fill="#1f3456")
         # Scroll a viewport over a taller document so newly exposed rows must travel.
@@ -109,6 +109,8 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
             position = 0
 
             async def frame(self, *, edge, sharp):
+                # Represent a document updating at 12 Hz, independent of capture polling.
+                await asyncio.sleep(1 / 12)
                 self.position = (self.position + 1) % len(images)
                 return frames[edge, sharp][self.position]
 
@@ -133,9 +135,9 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                     const { Relay } = await import('/relay.mjs');
                     const send = Relay.prototype.sendImage;
                     window.relayFrames = [];
-                    Relay.prototype.sendImage = function(id, bytes, parts) {
+                    Relay.prototype.sendImage = function(id, bytes, parts, patch) {
                         window.relayFrames.push([bytes[0], bytes.length]);
-                        return send.call(this, id, bytes, parts);
+                        return send.call(this, id, bytes, parts, patch);
                     };
                     const original = window.createImageBitmap;
                     window.hostDecodes = 0;

@@ -636,13 +636,22 @@ async function connectRelay(s) {
         data = frame.image;
         type = 2;
       }
+      if (type === 6 && !s.host && p.approved && data.length > 4 && data.length <= SINGLE_IMAGE + 4) {
+        const serial = new DataView(data.buffer, data.byteOffset, 4).getUint32(0);
+        const ack = () => s.relay.json(id, { t: "image-received", serial });
+        if (p.direct || p.waitingScreen) return ack();
+        const image = restoreRowPatch(p.receivedBase, data.subarray(4));
+        if (image) receiveJpeg(s, p, image).finally(ack);
+        else {
+          s.relay.json(id, { t: "need-full-image" });
+          ack();
+        }
+        return;
+      }
       if (type === 2) {
         p.assembly?.reset();
-        if (!s.host && p.approved && !p.direct && !p.waitingScreen) {
-          const image = restoreRowPatch(p.receivedBase, data);
-          if (image) receiveJpeg(s, p, image);
-          else s.relay.json(id, { t: "need-full-image" });
-        }
+        if (!s.host && p.approved && !p.direct && !p.waitingScreen)
+          receiveJpeg(s, p, data);
         return;
       }
       if (type !== 1 || data.length > 96000) return;
@@ -1509,6 +1518,7 @@ function nextFrame(s) {
   s.screenCursor = active + 1;
   s.captureScreen = screens[active];
   const selected = peers.filter((p) => p.screen === s.captureScreen);
+  s.captureProfiles = new Map(selected.map((p) => [p.id, p.profile]));
   const settings = selected.map((p) => p.profile);
   const now = performance.now();
   s.captureEdge = Math.max(...settings.map((p) => p.edge));
@@ -1602,7 +1612,10 @@ function startCapture(s) {
   return async (data, frame) => {
     const now = performance.now();
     const peers = [...s.peers.values()].filter((p) => p.approved && p.screen === s.captureScreen);
-    const viewers = peers.filter((p) => !p.direct && !p.sendingImage && now >= (p.nextFrame || 0));
+    // A quality change during native capture applies to the next capture. Re-encoding
+    // an obsolete frame wastes a decode and can briefly show the former setting.
+    const viewers = peers.filter((p) => s.captureProfiles.get(p.id) === p.profile &&
+      !p.direct && !p.sendingImage && now >= (p.nextFrame || 0));
     const webRTC = peers.some((p) => p.pc?.connectionState === "connected");
     let image;
     try {
@@ -1652,7 +1665,8 @@ function startCapture(s) {
           encoded.set(key, jpeg);
         }
         if (!current(s) || s.captureNumber !== frame) return;
-        if (s.peers.get(p.id) !== p || p.direct || p.screen !== s.captureScreen) continue;
+        if (s.peers.get(p.id) !== p || s.captureProfiles.get(p.id) !== p.profile ||
+            p.direct || p.screen !== s.captureScreen) continue;
         p.nextFrame = now + 1000 / fps - 1;
         if (now - p.lastImageAt < 2000 && sameImage(p.lastImage, jpeg)) continue;
         p.lastImage = jpeg;
@@ -1665,7 +1679,7 @@ function startCapture(s) {
         const screen = p.screen;
         Promise.resolve(switchNotice).then(async () => {
           const patch = rowPatch(p.jpegBase, jpeg);
-          const serial = await s.relay.sendImage(p.id, patch || jpeg, p.frameParts);
+          const serial = await s.relay.sendImage(p.id, patch || jpeg, p.frameParts, !!patch);
           if (!patch && jpeg.length > SINGLE_IMAGE && p.jpegRows && p.screen === screen)
             p.jpegBase = serial ? jpegReference(serial, jpeg) : null;
         })

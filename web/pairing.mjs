@@ -388,9 +388,9 @@ export class HostChannels {
     r?.relay.cancelImage(r.remote);
   }
 
-  sendImage(id, image, parts) {
+  sendImage(id, image, parts, patch) {
     const r = this.routes.get(id);
-    return r?.relay.sendImage(r.remote, image, parts);
+    return r?.relay.sendImage(r.remote, image, parts, patch);
   }
   send(id, type, data) {
     const r = this.routes.get(id);

@@ -85,5 +85,25 @@ test("scroll row references reconstruct the exact compressed image, including sh
   assert.equal(restoreRowPatch(base, corrupt), null);
   assert.equal(rowPatch(base, image(rows.map((c) => c + 100))), null);
   assert.equal(jpegReference(1, new Uint8Array(500)), null);
-  assert.equal(restoreRowPatch(null, original), original);
+  assert.equal(restoreRowPatch(null, original), null);
+});
+
+test("a slow viewer can have only one outstanding compressed row update", async () => {
+  const relay = new Relay("", true, "", {});
+  relay.ws = { readyState: 1, bufferedAmount: 0 };
+  relay.peers.set(1, {});
+  const packets = [];
+  relay.send = async (_id, type, bytes) => packets.push({ type, bytes });
+  const frame = Uint8Array.of(0x55, 0x52, 0x44, 0x31);
+  const waiting = relay.sendImage(1, frame, true, true);
+  await relay.sendImage(1, frame, true, true);
+  assert.equal(packets.length, 1);
+  assert.equal(packets[0].type, 6);
+  assert.deepEqual(packets[0].bytes.slice(4), frame);
+  const serial = new DataView(packets[0].bytes.buffer).getUint32(0);
+  relay.imageReceived(1, serial + 1);
+  assert.equal(relay.peers.get(1).sendingImage, true);
+  relay.imageReceived(1, serial);
+  assert.equal(await waiting, serial);
+  assert.equal(relay.peers.get(1).sendingImage, false);
 });

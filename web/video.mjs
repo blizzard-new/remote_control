@@ -149,7 +149,6 @@ export function rowPatch(base, image) {
 }
 
 export function restoreRowPatch(base, packet) {
-  if (packet[0] === 255) return packet; // Ordinary, independently decodable JPEG.
   if (!base || packet.length < 20 || packet.length > SINGLE_IMAGE) return null;
   const header = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
   const length = header.getUint32(8);
