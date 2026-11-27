@@ -57,7 +57,9 @@ class PrimaryScreen:
     def _encode(image, edge, sharp):
         image.thumbnail((edge, edge), Image.Resampling.LANCZOS if sharp else Image.Resampling.BILINEAR)
         with BytesIO() as out:
-            image.convert("RGB").save(out, format="JPEG", quality=95 if sharp else 80, subsampling=0 if sharp else 2)
+            pixels = image if image.mode == "RGB" else image.convert("RGB")
+            pixels.save(out, format="JPEG", quality=95 if sharp else 80, subsampling=0 if sharp else 2,
+                        restart_marker_rows=1)
             return out.getvalue()
 
     def _mac_permission(self):

@@ -2,6 +2,9 @@ import { SINGLE_IMAGE, MAX_IMAGE, PIECE_BYTES, imagePiece } from "./video.mjs";
 // The invitation stays on the two devices. Only its hash identifies a relay room.
 // Each direction has a separate AES-GCM key and an ordered packet counter.
 const utf8 = new TextEncoder();
+// Leave headroom below the relay's 5 MB/s host limit for control packets and network jitter.
+const MEDIA_BYTES_PER_MS = 3840;
+const MEDIA_BURST = 2 * (PIECE_BYTES + 64);
 const hex = (bytes) =>
   Array.from(bytes, (n) => n.toString(16).padStart(2, "0")).join("");
 const unhex = (s) =>
@@ -225,7 +228,7 @@ export class Relay {
   }
   imageReceived(id, serial) {
     const peer = this.peers.get(id);
-    if (peer && peer.imageSerial === serial) peer.acknowledge?.();
+    if (peer && peer.imageSerial === serial) peer.acknowledge?.(true);
   }
 
   cancelImage(id) {
@@ -235,6 +238,17 @@ export class Relay {
       peer.acknowledge?.();
     }
   }
+  mediaDelay(bytes, now) {
+    const available = this.mediaTick === undefined ? MEDIA_BURST : Math.min(
+      MEDIA_BURST, this.mediaCredit + (now - this.mediaTick) * MEDIA_BYTES_PER_MS,
+    );
+    this.mediaTick = now;
+    this.mediaCredit = available;
+    if (available < bytes) return Math.ceil((bytes - available) / MEDIA_BYTES_PER_MS);
+    this.mediaCredit -= bytes;
+    return 0;
+  }
+
   async sendImage(id, image, parts) {
     const peer = this.peers.get(id);
     if (
@@ -263,27 +277,15 @@ export class Relay {
         const size = fragmented
           ? Math.min(PIECE_BYTES, image.length - offset)
           : image.length;
-        const now = performance.now(),
-          due = Math.max(now, this.mediaDue || 0);
-        // All viewers on this socket share a byte budget. Keep input and consent messages unpaced.
-        this.mediaDue = due + (size + 64) / 3200;
-        if (due > now) await new Promise((done) => setTimeout(done, due - now));
-        while (
-          !this.closed &&
-          !peer.imageCancelled &&
-          this.peers.get(id) === peer &&
-          this.ws.readyState === 1 &&
-          this.ws.bufferedAmount > PIECE_BYTES
-        ) {
-          await new Promise((done) => setTimeout(done, 40));
+        // Check at send time so viewers share one burst even when timers wake late.
+        for (;;) {
+          if (this.closed || peer.imageCancelled || this.peers.get(id) !== peer ||
+              this.ws.readyState !== 1) return;
+          const delay = this.ws.bufferedAmount > PIECE_BYTES
+            ? 12 : this.mediaDelay(size + 64, performance.now());
+          if (!delay) break;
+          await new Promise((done) => setTimeout(done, delay));
         }
-        if (
-          this.closed ||
-          peer.imageCancelled ||
-          this.peers.get(id) !== peer ||
-          this.ws.readyState !== 1
-        )
-          return;
         await this.send(
           id,
           fragmented ? 4 : 2,
@@ -293,7 +295,7 @@ export class Relay {
       // A slow downstream must finish one large frame before another one is queued.
       if (fragmented && !peer.imageCancelled && this.peers.get(id) === peer) {
         timer = setTimeout(peer.acknowledge, 25000);
-        await receipt;
+        if (await receipt) return peer.imageSerial;
       }
     } finally {
       clearTimeout(timer);

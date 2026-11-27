@@ -92,12 +92,13 @@ async def visible_phone(page):
 
 class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
     async def test_scrolling_preserves_selected_resolution_and_uses_native_jpeg(self):
-        source = Image.effect_noise((2560, 1600), 67).convert("RGB")
+        source = Image.effect_noise((2560, 1760), 67).convert("RGB")
         draw = ImageDraw.Draw(source)
-        draw.rectangle((0, 0, 780, 1600), fill="#f1f4f9")
-        for y in range(25, 1600, 44):
+        draw.rectangle((0, 0, 780, 1760), fill="#f1f4f9")
+        for y in range(25, 1760, 44):
             draw.text((32, y), f"{y:04}   Desktop scrolling fixture", fill="#1f3456")
-        images = [ImageChops.offset(source, 0, -i * 27) for i in range(6)]
+        # Scroll a viewport over a taller document so newly exposed rows must travel.
+        images = [source.crop((0, y, 2560, y + 1600)) for y in range(0, 161, 32)]
         frames = {
             (edge, sharp): [PrimaryScreen._encode(image.copy(), edge, sharp) for image in images]
             for edge, sharp in [(3840, True), (1920, True)]
@@ -128,7 +129,14 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 laptop = await open_device(browser, desktop_site, address, "PC", "Windows", "desktop")
                 controller = os.environ.get("REMOTE_DESKTOP_PLATFORM", "Android")
                 page = await open_device(browser, viewer_site, address, "Controller", controller, "viewer")
-                await laptop.evaluate("""() => {
+                await laptop.evaluate("""async () => {
+                    const { Relay } = await import('/relay.mjs');
+                    const send = Relay.prototype.sendImage;
+                    window.relayFrames = [];
+                    Relay.prototype.sendImage = function(id, bytes, parts) {
+                        window.relayFrames.push([bytes[0], bytes.length]);
+                        return send.call(this, id, bytes, parts);
+                    };
                     const original = window.createImageBitmap;
                     window.hostDecodes = 0;
                     window.createImageBitmap = (...args) => {
@@ -167,6 +175,11 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 full = await scroll()
                 self.assertGreaterEqual(len(full), 3)
                 self.assertEqual(set(full), {2560})
+                packets = await laptop.evaluate("window.relayFrames")
+                patches = [size for marker, size in packets if marker == 0x55]
+                self.assertTrue(patches, packets[:12])
+                self.assertLess(max(patches), len(frames[3840, True][0]) // 5)
+                print(f"Full JPEG {len(frames[3840, True][0]):,} bytes; largest row update {max(patches):,} bytes.", flush=True)
                 self.assertFalse(native.wheel.empty())
                 await expect(page.locator("#smooth-scroll")).to_have_count(0)
                 await page.locator("#quality").evaluate("""(field) => {
@@ -228,6 +241,40 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 picture = phone.locator("#picture")
                 await expect(button).to_have_text("螢幕 1 / 2")
                 await phone.wait_for_function("() => document.querySelector('#picture').width === 640")
+                for width, height in [(1280, 720), (360, 640), (800, 360), (640, 240)]:
+                    await phone.set_viewport_size({"width": width, "height": height})
+                    await phone.locator("#video-menu summary").click()
+                    panel = await phone.locator(".video-options").bounding_box()
+                    rail = await phone.locator(".viewer-bar").bounding_box()
+                    self.assertGreaterEqual(panel["x"], 0)
+                    self.assertGreaterEqual(panel["y"], 0)
+                    self.assertLessEqual(panel["x"] + panel["width"], rail["x"])
+                    self.assertLessEqual(panel["y"] + panel["height"], height)
+                    self.assertGreaterEqual(rail["y"], 39)
+                    self.assertTrue(await phone.evaluate(
+                        "() => document.elementFromPoint(innerWidth-15, 15).id === 'picture'"))
+                    await phone.locator("#video-menu summary").click()
+                await phone.set_viewport_size({"width": 360, "height": 420})
+                await phone.locator("#video-menu summary").click()
+                await phone.locator("#view-scale").select_option("native")
+                await phone.locator("#video-menu summary").click()
+                pan = phone.locator("#pan-view")
+                await expect(pan).to_be_visible()
+                await pan.click(position={"x": 2, "y": 10})
+                await phone.wait_for_function("() => document.querySelector('#screen-viewport').scrollLeft === 0")
+                await phone.mouse.click(80, 210)
+                async with asyncio.timeout(5):
+                    while (event := await native.events.get())["kind"] != "button" or not event["down"]:
+                        pass
+                self.assertAlmostEqual(event["x"], 80 / 640, places=2)
+                self.assertAlmostEqual(event["y"], 0.5, places=2)
+                await pan.press("ArrowRight")
+                await phone.wait_for_function("() => document.querySelector('#screen-viewport').scrollLeft > 0")
+                await phone.locator("#video-menu summary").click()
+                await phone.locator("#view-scale").select_option("fit")
+                await phone.locator("#video-menu summary").click()
+                await expect(pan).to_be_hidden()
+                await phone.set_viewport_size({"width": 1000, "height": 640})
                 await button.click()
                 await expect(button).to_have_text("螢幕 2 / 2")
                 await phone.wait_for_function("""() => {
@@ -237,7 +284,7 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 }""")
                 await picture.click()
                 async with asyncio.timeout(5):
-                    while (event := await native.events.get())["kind"] != "button":
+                    while (event := await native.events.get())["kind"] != "button" or not event["down"]:
                         pass
                 self.assertEqual(event["monitor"], "hdmi")
                 menu = phone.locator("#screenshot-menu summary")
@@ -434,6 +481,6 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 await phone.wait_for_function("() => document.querySelector('#picture').width === 1280", timeout=20000)
                 self.assertEqual(await phone.locator("#picture").evaluate("c=>c.height"), 800)
                 await expect(phone.locator("#stats")).to_contain_text("1280 × 800")
-                await expect(phone.locator("#stats")).to_contain_text("fps · JPEG")
+                await expect(phone.locator("#stats")).to_contain_text("fps · 中繼 JPEG")
                 print(f"Desktop JPEG {len(encoded[3840, True]):,} bytes, decoded 2560x1600 to 1280x800. "
                       f"Colored-text mean error {text_error(sharp_pixels):.2f} clear vs {text_error(standard_pixels):.2f} standard.")

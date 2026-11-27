@@ -4,6 +4,9 @@ import {
   MAX_IMAGE,
   ImageAssembly,
   sameImage,
+  jpegReference,
+  rowPatch,
+  restoreRowPatch,
 } from "./video.mjs";
 import {
   HostChannels,
@@ -346,6 +349,8 @@ function closeSession(s, message) {
       $("view-mode").hidden =
       $("share-request").hidden =
         true;
+    $("view-scale").value = "fit";
+    updateViewScale();
     $("stats").textContent = "正在接收畫面";
     $("video-menu").open = false;
     $("screenshot-menu").open = false;
@@ -553,6 +558,7 @@ async function connectRelay(s) {
           monitorControls: true,
           avc: false,
           frameParts: true,
+          jpegRows: true,
           screenRequest: !!window.PhoneDevices,
           ...(s.resume?.length ? { resume: s.resume.map((r) => r.offer) } : {}),
           ...profile(),
@@ -626,13 +632,17 @@ async function connectRelay(s) {
         const frame = p.assembly.accept(data);
         if (!frame) return;
         s.relay.json(id, { t: "image-received", serial: frame.serial });
+        p.receivedBase = frame;
         data = frame.image;
         type = 2;
       }
       if (type === 2) {
         p.assembly?.reset();
-        if (!s.host && p.approved && !p.direct && !p.waitingScreen)
-          receiveJpeg(s, p, data);
+        if (!s.host && p.approved && !p.direct && !p.waitingScreen) {
+          const image = restoreRowPatch(p.receivedBase, data);
+          if (image) receiveJpeg(s, p, image);
+          else s.relay.json(id, { t: "need-full-image" });
+        }
         return;
       }
       if (type !== 1 || data.length > 96000) return;
@@ -726,6 +736,7 @@ async function connectRelay(s) {
           }
           p.profile = profile(m);
           p.frameParts = m.frameParts === true;
+          p.jpegRows = p.frameParts && m.jpegRows === true;
           p.supportsScreens = m.monitorControls === true;
           p.viewOnly = m.viewOnly === true;
           p.platform = platforms.has(m.platform) ? m.platform : "";
@@ -739,6 +750,11 @@ async function connectRelay(s) {
           return;
         }
         if (!p.approved) return;
+        if (m.t === "need-full-image" && p.jpegRows) {
+          p.jpegBase = null;
+          p.lastImage = null;
+          return;
+        }
         if (m.t === "image-received")
           return s.relay.imageReceived(p.id, m.serial);
         if (m.t === "select-screen" && s.screens.some((screen) => screen.id === m.screen)) {
@@ -892,7 +908,8 @@ async function connectRelay(s) {
           viewerScreens(s, p, p.screens);
         }
       } else if (!s.host && p.approved && m.t === "offer") {
-        await direct(s, p, m.sdp).catch(() => {
+        // ICE gathering may take seconds. Let incoming relay frames keep painting meanwhile.
+        direct(s, p, m.sdp).catch(() => {
           p.pc?.close();
           p.pc = null;
         });
@@ -935,6 +952,9 @@ function paint(s, p, image, w, h, format) {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+    canvas.style.setProperty("--frame-width", w + "px");
+    canvas.style.setProperty("--frame-height", h + "px");
+    updateNavigator();
   }
   ctx.drawImage(image, 0, 0, w, h);
   if (s.switchingScreen) {
@@ -970,7 +990,7 @@ function paint(s, p, image, w, h, format) {
     s.relay.json(p.id, { t: "quality", ...profile(), avc: true });
     p.avcTimer = setTimeout(() => compatibleVideo(s, p), 5000);
   }
-  s.format = { avc: "H.264", direct: "WebRTC", jpeg: "JPEG" }[format];
+  s.format = { avc: "H.264", direct: "直連 WebRTC", jpeg: "中繼 JPEG" }[format];
   if (!s.painted && !s.reported) {
     $("stats").textContent = `實收 ${w} × ${h} · ${s.format}`;
     s.reported = true;
@@ -1253,7 +1273,7 @@ async function direct(s, p, offer) {
       const timer = setTimeout(done, 3500);
       pc.addEventListener("icegatheringstatechange", changed);
     });
-  if (current(s) && s.peers.has(p.id))
+  if (current(s) && s.peers.get(p.id) === p && p.pc === pc && pc.signalingState !== "closed")
     s.relay.json(p.id, {
       t: s.host ? "offer" : "answer",
       sdp: pc.localDescription,
@@ -1361,6 +1381,50 @@ function receiveVideo(s, p, bytes) {
     fallback();
   }
 }
+const viewport = $("screen-viewport");
+const navigatorButton = $("pan-view");
+function updateNavigator() {
+  const { clientWidth: w, clientHeight: h, scrollWidth: fullW, scrollHeight: fullH } = viewport;
+  navigatorButton.hidden = !viewport.classList.contains("native") || !w || !h ||
+    (fullW <= w && fullH <= h);
+  if (navigatorButton.hidden) return;
+  navigatorButton.style.width = Math.min(92, 76 * fullW / fullH) + "px";
+  navigatorButton.style.aspectRatio = fullW + " / " + fullH;
+  const thumb = navigatorButton.firstElementChild.style;
+  thumb.width = (100 * w / fullW) + "%";
+  thumb.height = (100 * h / fullH) + "%";
+  thumb.left = (100 * viewport.scrollLeft / fullW) + "%";
+  thumb.top = (100 * viewport.scrollTop / fullH) + "%";
+}
+function updateViewScale() {
+  const native = $("view-scale").value === "native";
+  viewport.classList.toggle("native", native);
+  viewport.scrollTo((viewport.scrollWidth - viewport.clientWidth) / 2,
+                    (viewport.scrollHeight - viewport.clientHeight) / 2);
+  updateNavigator();
+}
+$("view-scale").onchange = updateViewScale;
+new ResizeObserver(updateNavigator).observe(viewport);
+viewport.addEventListener("scroll", updateNavigator);
+function panView(event) {
+  const rect = navigatorButton.getBoundingClientRect();
+  viewport.scrollTo((event.clientX - rect.left) / rect.width * viewport.scrollWidth - viewport.clientWidth / 2,
+                    (event.clientY - rect.top) / rect.height * viewport.scrollHeight - viewport.clientHeight / 2);
+}
+navigatorButton.onpointerdown = (event) => {
+  if (!event.isPrimary || event.button !== 0) return;
+  navigatorButton.setPointerCapture(event.pointerId);
+  panView(event);
+};
+navigatorButton.onpointermove = (event) => {
+  if (navigatorButton.hasPointerCapture(event.pointerId)) panView(event);
+};
+navigatorButton.onkeydown = (event) => {
+  const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+  if (!direction) return;
+  event.preventDefault();
+  viewport.scrollBy(direction[0] * viewport.clientWidth / 2, direction[1] * viewport.clientHeight / 2);
+};
 function profile(values) {
   const edge = Number(values ? values.edge : $("quality").value);
   const fps = Number(values ? values.fps : $("fps").value);
@@ -1489,6 +1553,7 @@ function viewerScreens(s, p, screens) {
 }
 function waitForScreen(s, p, screen) {
   p.nextJpeg = null;
+  p.receivedBase = null;
   p.waitingScreen = true;
   p.requestedScreen = screen;
   p.screenRevision = (p.screenRevision || 0) + 1;
@@ -1503,6 +1568,7 @@ function selectHostScreen(s, p, screen) {
     s.local.send(JSON.stringify({ type: "input", id: p.localId, event: { kind: "release" } }));
   p.screen = screen;
   s.relay.cancelImage(p.id);
+  p.jpegBase = null;
   p.hasSwitched = true;
   p.pendingScreen = true;
   p.lastImage = null;
@@ -1596,7 +1662,13 @@ function startCapture(s) {
           ? s.relay.json(p.id, { t: "screen-active", screen: p.screen })
           : null;
         p.pendingScreen = false;
-        Promise.resolve(switchNotice).then(() => s.relay.sendImage(p.id, jpeg, p.frameParts))
+        const screen = p.screen;
+        Promise.resolve(switchNotice).then(async () => {
+          const patch = rowPatch(p.jpegBase, jpeg);
+          const serial = await s.relay.sendImage(p.id, patch || jpeg, p.frameParts);
+          if (!patch && jpeg.length > SINGLE_IMAGE && p.jpegRows && p.screen === screen)
+            p.jpegBase = serial ? jpegReference(serial, jpeg) : null;
+        })
           .finally(() => {
             p.sendingImage = false;
             nextFrame(s);

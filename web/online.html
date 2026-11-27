@@ -33,7 +33,7 @@
         </nav>
         <div class="rail-bottom">
           <i data-i="shield-check"></i
-          ><span>Uniway Remote<small>版本 0.5.9</small></span>
+          ><span>Uniway Remote<small>版本 0.5.10</small></span>
         </div>
       </aside>
       <header class="top">
@@ -185,7 +185,12 @@
       </div>
     </section>
     <section id="stage" hidden>
-      <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
+      <div id="screen-viewport">
+        <canvas id="picture" tabindex="0" aria-label="遠端螢幕"></canvas>
+      </div>
+      <button id="pan-view" aria-label="移動檢視範圍，亦可使用方向鍵" hidden>
+        <span></span>
+      </button>
       <p id="first-picture" role="status" hidden></p>
       <p id="screenshot-status" role="status" hidden></p>
       <div id="share-request" hidden>
@@ -202,11 +207,13 @@
         spellcheck="false"
         hidden
       ></textarea>
-      <div class="viewer-bar">
+      <div class="viewer-notes">
         <span id="view-mode" hidden>僅供觀看</span>
+        <span id="save-warning" role="status" hidden></span>
+      </div>
+      <div class="viewer-bar" role="group" aria-label="遠端工具列">
         <button id="ask-control" hidden>要求操作</button>
         <button id="switch-display" hidden aria-label="切換螢幕">切換螢幕</button>
-        <span id="save-warning" role="status" hidden></span>
         <button id="keyboard-button" hidden aria-label="手機鍵盤">
           <i data-i="keyboard"></i>
         </button>
@@ -222,6 +229,11 @@
           <summary aria-label="畫質與幀率"><i data-i="sliders"></i></summary>
           <div class="video-options">
             <h2>畫面設定</h2>
+            <label for="view-scale">顯示大小</label>
+            <select id="view-scale">
+              <option value="fit">完整畫面</option>
+              <option value="native">原尺寸閱讀（左下角可移動視野）</option>
+            </select>
             <label for="quality">畫質上限</label
             ><select id="quality">
               <option value="960">960 px（16:9 約 540p）</option>

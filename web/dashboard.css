@@ -446,6 +446,34 @@ summary {
   z-index: 12;
   background: #111920;
 }
+#screen-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+#screen-viewport.native #picture {
+  width: max(100%, var(--frame-width));
+  height: max(100%, var(--frame-height));
+}
+#pan-view {
+  position: absolute;
+  left: max(8px, env(safe-area-inset-left));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  width: 92px;
+  max-height: 76px;
+  padding: 0;
+  border: 1px solid #bfcfdd;
+  border-radius: 4px;
+  background: #1e2e40e8;
+  touch-action: none;
+  cursor: grab;
+}
+#pan-view span {
+  position: absolute;
+  background: #589fe95e;
+  border: 1px solid white;
+  pointer-events: none;
+}
 #picture {
   width: 100%;
   height: 100%;
@@ -454,13 +482,37 @@ summary {
   outline: none;
   touch-action: none;
 }
-.viewer-bar {
+#stage {
+  --rail-width: 72px;
+  --rail-right: max(8px, env(safe-area-inset-right));
+  --tools-top: calc(40px + env(safe-area-inset-top));
+  --tools-bottom: max(8px, env(safe-area-inset-bottom));
+}
+.viewer-bar, .video-options, .screenshot-options {
   position: absolute;
-  right: max(8px, env(safe-area-inset-right));
-  top: max(8px, env(safe-area-inset-top));
+  top: var(--tools-top);
+  bottom: var(--tools-bottom);
+  margin-block: auto;
+  height: max-content;
+  max-height: calc(100% - var(--tools-top) - var(--tools-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.viewer-bar {
+  right: var(--rail-right);
+  width: var(--rail-width);
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   gap: 4px;
+}
+.viewer-bar > * { flex-shrink: 0; }
+.viewer-bar summary, .viewer-bar > button { justify-content: center; }
+.viewer-notes {
+  position: absolute;
+  bottom: var(--tools-bottom);
+  right: var(--rail-right);
+  max-width: 60%;
+  pointer-events: none;
 }
 .viewer-bar button,
 .viewer-bar summary {
@@ -479,11 +531,10 @@ summary {
 }
 .video-options,
 .screenshot-options {
-  position: absolute;
-  right: 0;
-  top: 40px;
+  position: fixed;
+  right: calc(var(--rail-right) + var(--rail-width) + 6px);
   background: white;
-  width: 220px;
+  width: min(252px, calc(100% - var(--rail-right) - var(--rail-width) - 16px - env(safe-area-inset-left)));
   padding: 16px;
   border-radius: 12px;
   box-shadow: 0 10px 35px #12233738;
