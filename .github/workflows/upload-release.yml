@@ -1,0 +1,59 @@
+name: Attach verified 0.5.10 downloads
+
+on:
+  push:
+    branches: [release-assets/v0.5.10]
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/release-assets/v0.5.10'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_ID: '45921678096'
+      SOURCE_SHA: ce70b81651d70904982c92cc475e788902c5b80b
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build and draft target
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID" | jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha'
+          while true; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_ID/jobs?per_page=100" > build-jobs.json
+            required='["Desktop (windows-latest)", "Desktop (macos-15)", "Desktop (macos-15-intel)", "Desktop (ubuntu-22.04)", "Android APK and screen capture", "Control Android and verify video on Windows", "Control Android and verify video on Darwin"]'
+            if jq -e --argjson required "$required" '$required - [.jobs[] | select(.conclusion == "success") | .name] == []' build-jobs.json; then
+              break
+            fi
+            if jq -e --argjson required "$required" '[.jobs[] | select(.name as $name | $required | index($name)) | select(.status == "completed" and .conclusion != "success")] | length > 0' build-jobs.json; then
+              exit 1
+            fi
+            sleep 15
+          done
+          gh release view v0.5.10 --json isDraft,targetCommitish | jq -e --arg sha "$SOURCE_SHA" '.isDraft and .targetCommitish == $sha'
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 45921678096
+          github-token: ${{ github.token }}
+          path: build-artifacts
+      - name: Assemble and checksum downloads
+        run: |
+          mkdir downloads
+          cp build-artifacts/Windows-desktop-host/RemoteControlHost.exe downloads/RemoteControl-Windows-x64.exe
+          cp build-artifacts/Mac-host-macos-15/RemoteControl-macOS-arm64.zip downloads/
+          cp build-artifacts/Mac-host-macos-15-intel/RemoteControl-macOS-x86_64.zip downloads/
+          cp build-artifacts/Windows-desktop-host/RemoteControl-Setup-Windows-x64.exe downloads/
+          cp build-artifacts/Mac-host-macos-15/RemoteControl-macOS-arm64.pkg downloads/
+          cp build-artifacts/Mac-host-macos-15-intel/RemoteControl-macOS-x86_64.pkg downloads/
+          cp build-artifacts/Linux-desktop-host/RemoteControl-Linux-amd64.deb downloads/
+          cp packaging/release/RemoteControl-Android.apk downloads/
+          cd downloads
+          gh release download v0.5.9 -p RemoteControl-Server-Windows.zip
+          sha256sum --check <<'SUMS'
+          5dc5a2b1d07dc15173c4434e6e20c5313684f446f2be38848761e7d4d4be3425  RemoteControl-Android.apk
+          8eb76853034c37604f13d8ae9fc657de4503be1c5f365cb954554c5c5ac22c2d  RemoteControl-Server-Windows.zip
+          SUMS
+          sha256sum RemoteControl* > SHA256SUMS.txt
+          gh release upload v0.5.10 --clobber RemoteControl* SHA256SUMS.txt
