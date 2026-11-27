@@ -499,6 +499,9 @@ summary {
   overscroll-behavior: contain;
 }
 .viewer-bar {
+  --rail-top: max(var(--tools-top), var(--remote-title-bottom, 0px));
+  top: var(--rail-top);
+  max-height: calc(100% - var(--rail-top) - var(--tools-bottom));
   right: var(--rail-right);
   width: var(--rail-width);
   display: flex;
