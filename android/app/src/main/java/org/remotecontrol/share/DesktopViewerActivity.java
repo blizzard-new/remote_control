@@ -6,21 +6,62 @@ import android.graphics.Bitmap;
 import android.net.http.SslError;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.webkit.*;
 import android.widget.*;
 import java.io.ByteArrayInputStream;
 
-public final class DesktopViewerActivity extends Activity {
+public class DesktopViewerActivity extends Activity {
+    private ScreenInsets insets;
     private LinearLayout page;
     private TrackpadWebView viewer;
+    private boolean immersive;
+    private AppUpdates updates;
+    private void updateState() {
+        if (updates == null || viewer == null) return;
+        viewer.evaluateJavascript("window.phoneUpdateState?.("+
+            org.json.JSONObject.quote(updates.message())+","+updates.available()+","+updates.busy()+")",null);
+    }
+
+    private void fullScreen(boolean active) {
+        immersive = active;
+        insets.setImmersive(active);
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController bars = getWindow().getInsetsController();
+            if (bars == null) return;
+            int types = android.view.WindowInsets.Type.systemBars();
+            if (active) {
+                bars.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                bars.hide(types);
+            } else bars.show(types);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(active
+                ? android.view.View.SYSTEM_UI_FLAG_FULLSCREEN | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : ScreenInsets.LIGHT_BARS);
+        }
+    }
+
+    @Override public void onWindowFocusChanged(boolean focus) {
+        super.onWindowFocusChanged(focus);
+        if (focus && immersive) fullScreen(true);
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        return (viewer != null && viewer.routeScreenshotKey(event)) || super.dispatchKeyEvent(event);
+    }
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        setContentView(page);
-        addressForm("", null);
+        insets = new ScreenInsets(this, page);
+        if(onlineMode()) showViewer("https://appassets.androidplatform.net/online.html");
+        else addressForm("", null);
+    }
+
+    protected boolean onlineMode() {
+        return true;
     }
 
     private void addressForm(String address, String error) {
@@ -53,16 +94,44 @@ public final class DesktopViewerActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private void showViewer(String address) {
         String origin = DesktopOrigin.of(address);
+        boolean bundled = onlineMode() && origin.equals("https://appassets.androidplatform.net");
         page.removeAllViews();
         page.setPadding(0, 0, 0, 0);
         TrackpadWebView view = new TrackpadWebView(this, origin);
         viewer = view;
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(bundled);
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        if (bundled) {
+            updates = new AppUpdates(this,new LinearLayout(this),this::updateState);
+            view.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void refresh() { runOnUiThread(() -> updateState()); }
+                @JavascriptInterface public void action(boolean install) { runOnUiThread(() -> {
+                    if (viewer == view && !immersive && updates!=null) updates.action(install);
+                }); }
+            },"PhoneUpdates");
+            view.addJavascriptInterface(new PhoneDevices(this), "PhoneDevices");
+            view.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void keyboard(boolean show) {
+                    view.postDelayed(() -> {
+                        if (viewer != view || !immersive) return;
+                        android.view.inputmethod.InputMethodManager ime = getSystemService(android.view.inputmethod.InputMethodManager.class);
+                        if (show) ime.showSoftInput(view,android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                        else ime.hideSoftInputFromWindow(view.getWindowToken(),0);
+                    },65);
+                }
+                @JavascriptInterface public void setActive(boolean active) {
+                    runOnUiThread(() -> { if (viewer == view) fullScreen(active); });
+                }
+                @JavascriptInterface public void setScreenshotEnabled(boolean enabled) {
+                    runOnUiThread(() -> { if (viewer == view) view.setScreenshotEnabled(enabled); });
+                }
+            }, "ViewerScreen");
+        }
         settings.setSupportZoom(false);
         settings.setSupportMultipleWindows(false);
         view.setWebViewClient(new WebViewClient() {
@@ -70,7 +139,15 @@ public final class DesktopViewerActivity extends Activity {
                 return !DesktopOrigin.matches(origin, request.getUrl().toString());
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
-                if (DesktopOrigin.matches(origin, request.getUrl().toString())) return null;
+                if (bundled && DesktopOrigin.matches(origin,request.getUrl().toString())) {
+                    String path=request.getUrl().getPath();
+                    if(path!=null && (path.equals("/icons/uniway-remote.png") || path.matches("/icons/[a-z0-9-]+\\.svg") || path.matches("/(online\\.html|dashboard\\.css|style\\.css|online\\.mjs|relay\\.mjs|video\\.mjs|pairing\\.mjs|devices\\.mjs|input\\.mjs)"))) {
+                        String mime=path.endsWith("png")?"image/png":path.endsWith("html")?"text/html":path.endsWith("css")?"text/css":path.endsWith("svg")?"image/svg+xml":"text/javascript";
+                        try { return new WebResourceResponse(mime,"utf-8",200,"OK",java.util.Collections.singletonMap("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src wss:; media-src blob:; img-src 'self' data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'"),
+                                getAssets().open(path.substring(1))); }
+                        catch(java.io.IOException unavailable) { /* fall through to the denied response */ }
+                    }
+                } else if (!bundled && DesktopOrigin.matches(origin, request.getUrl().toString())) return null;
                 return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
                         java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
             }
@@ -98,11 +175,19 @@ public final class DesktopViewerActivity extends Activity {
         if (viewer == null) return;
         TrackpadWebView closing = viewer;
         viewer = null;
+        if (updates!=null) {updates.close(); updates=null;}
+        fullScreen(false);
         closing.navigationStarted();
         page.removeView(closing);
         closing.stopLoading();
         closing.setWebViewClient(new WebViewClient());
         closing.destroy();
+    }
+
+    @Override protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (onlineMode() && viewer != null) viewer.evaluateJavascript("window.openDeviceList?.()", null);
     }
 
     @Override public void onPause() {
@@ -112,7 +197,11 @@ public final class DesktopViewerActivity extends Activity {
 
     @Override public void onResume() {
         super.onResume();
-        if (viewer != null) viewer.onResume();
+        if (viewer != null) {
+            viewer.onResume();
+            if (onlineMode()) viewer.evaluateJavascript("window.refreshDashboard?.()", null);
+        }
+        if (updates != null) updates.resumed();
     }
 
     @Override public void onDestroy() {

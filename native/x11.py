@@ -4,6 +4,7 @@ import ctypes as C
 import os
 import re
 import subprocess
+from .monitors import Monitor
 
 
 # DOM code and XKB key names both describe physical positions on the keyboard.
@@ -66,7 +67,8 @@ def _keycodes(display_name):
 class X11Backend:
     privacy_supported = False
 
-    def __init__(self):
+    def __init__(self, *, extended=False):
+        self.extended = extended
         display_name = os.environ.get("DISPLAY")
         if not display_name or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
             raise RuntimeError("遠端輸入需要原生 X11 工作階段")
@@ -116,6 +118,13 @@ class X11Backend:
             raise
 
     def geometry(self):
+        monitors = self.monitors()
+        if not monitors or (not self.extended and len(monitors) != 1):
+            raise RuntimeError("遠端輸入需要至少一個可用的 X11 顯示器")
+        self.size = monitors[0].size
+        return self.size
+
+    def monitors(self):
         if not self.display or self.x.XScreenCount(self.display) != 1:
             raise RuntimeError("遠端輸入需要單一 X11 螢幕")
         count = _INT()
@@ -123,22 +132,23 @@ class X11Backend:
         if not monitors:
             raise RuntimeError("無法取得 X11 螢幕配置")
         try:
-            if count.value != 1:
-                raise RuntimeError("遠端輸入需要單一 X11 顯示器")
-            monitor = monitors[0]
-            if monitor.noutput != 1 or monitor.x != 0 or monitor.y != 0:
-                raise RuntimeError("遠端輸入需要單一 X11 顯示器")
-            width, height = monitor.width, monitor.height
+            found = [Monitor(str(monitor.name),
+                             (monitor.x, monitor.y, monitor.x + monitor.width, monitor.y + monitor.height),
+                             bool(monitor.primary))
+                     for monitor in monitors[:count.value] if monitor.noutput == 1]
         finally:
             self.rr.XRRFreeMonitors(monitors)
         root, x, y = _ULONG(), _INT(), _INT()
         size = [_UINT() for _ in range(4)]  # width, height, border, depth
         valid = self.x.XGetGeometry(self.display, self.root, C.byref(root), C.byref(x), C.byref(y),
                                     *(C.byref(value) for value in size))
-        if not valid or min(width, height) <= 0 or (width, height) != (size[0].value, size[1].value):
+        width, height = size[0].value, size[1].value
+        if not valid or not found or any(
+            not (0 <= m.bounds[0] < m.bounds[2] <= width and 0 <= m.bounds[1] < m.bounds[3] <= height)
+            for m in found
+        ) or (not self.extended and (len(found) != 1 or found[0].bounds != (0, 0, width, height))):
             raise RuntimeError("X11 虛擬桌面與顯示器座標不符")
-        self.size = width, height
-        return self.size
+        return sorted(found, key=lambda m: (not m.primary, m.bounds[0], m.bounds[1]))
 
     def _edge(self, emit, held, code, down):
         if down == (code in held):
@@ -150,15 +160,16 @@ class X11Backend:
         else:
             held.remove(code)
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         # Desktop.apply validates the event and refreshes geometry before dispatch.
         kind = event["kind"]
         if kind == "release":
             self.release_all()
             return
         if "x" in event:
-            x = round(event["x"] * (self.size[0] - 1))
-            y = round(event["y"] * (self.size[1] - 1))
+            width, height = self.size
+            target = monitor or Monitor("", (0, 0, width, height))
+            x, y = target.position(event["x"], event["y"])
             if not self.xt.XTestFakeMotionEvent(self.display, self.screen, x, y, 0):
                 raise RuntimeError("XTEST 無法移動游標")
         if kind == "button":

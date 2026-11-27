@@ -12,8 +12,12 @@ def validate_event(event):
     if not isinstance(event, dict):
         raise ValueError("輸入事件格式錯誤")
     kind = event.get("kind")
-    if kind not in ("move", "button", "wheel", "key", "release"):
+    if kind not in ("move", "button", "wheel", "key", "release", "text"):
         raise ValueError("不支援的輸入事件")
+    if kind == "text":
+        value = event.get("text")
+        if not isinstance(value, str) or not 0 < len(value) <= 256 or any(ord(c)<32 or 0xd800<=ord(c)<=0xdfff for c in value):
+            raise ValueError("文字輸入無效")
     if kind == "move" or "x" in event or "y" in event:
         if kind not in ("move", "button", "wheel") or not all(_number(event.get(axis), 0, 1) for axis in ("x", "y")):
             raise ValueError("游標超出分享畫面")
@@ -28,19 +32,19 @@ def validate_event(event):
 
 
 class Desktop:
-    def __init__(self):
+    def __init__(self, *, primary_only=False):
         self._backend = None
         self._failure = ""
         try:
             if sys.platform == "win32":
                 from .windows import WindowsBackend
-                self._backend = WindowsBackend()
+                self._backend = WindowsBackend(primary_only=primary_only)
             elif sys.platform == "darwin":
                 from .macos import MacBackend
-                self._backend = MacBackend()
+                self._backend = MacBackend(primary_only=primary_only)
             elif sys.platform.startswith("linux"):
                 from .x11 import X11Backend
-                self._backend = X11Backend()
+                self._backend = X11Backend(extended=primary_only)
         except (AttributeError, ImportError, OSError, RuntimeError) as exc:
             # Video sharing still works without a usable native desktop.
             self._failure = str(exc)
@@ -48,20 +52,38 @@ class Desktop:
     @property
     def capabilities(self):
         hint = getattr(self, "_failure", "")
+        reason = "unavailable"
         try:
             width, height = self._backend.geometry() if self._backend else (0, 0)
         except (RuntimeError, OSError) as exc:
             width, height = 0, 0
             hint = str(exc)
+            if isinstance(exc, PermissionError):
+                reason = "access"
         result = {
             "control": width > 0 and height > 0,
+            "keyboard": hasattr(self._backend,"editable_focus"),
             "privacy": width > 0 and height > 0 and bool(getattr(self._backend, "privacy_supported", False)),
             "width": width,
             "height": height,
         }
         if hint and not result["control"]:
             result["controlHint"] = hint
+            result["controlReason"] = reason
         return result
+
+    def mac_permissions(self):
+        if not hasattr(self._backend, "permissions"):
+            raise RuntimeError(self._failure or "無法載入 Mac 的鍵鼠輸入服務。")
+        return self._backend.permissions()
+
+    def editable_focus(self):
+        probe = getattr(self._backend, "editable_focus", None)
+        return bool(probe and probe())
+
+    def monitors(self):
+        enumerate_monitors = getattr(self._backend, "monitors", None)
+        return enumerate_monitors() if enumerate_monitors else []
 
     def request_control(self):
         if hasattr(self._backend, "request_control"):
@@ -72,7 +94,7 @@ class Desktop:
     def privacy_enabled(self):
         return bool(getattr(self._backend, "privacy_enabled", False))
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         validate_event(event)
         if event["kind"] == "release":
             self.release()
@@ -80,7 +102,10 @@ class Desktop:
         if not self.capabilities["control"]:
             self.release()
             raise RuntimeError("遠端輸入需要支援的單螢幕桌面")
-        self._backend.apply(event)
+        if monitor is None:
+            self._backend.apply(event)
+        else:
+            self._backend.apply(event, monitor)
 
     def release(self):
         if self._backend is not None:

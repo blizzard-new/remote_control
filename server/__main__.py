@@ -27,7 +27,7 @@ def ice_configuration(raw):
     return servers
 
 
-def main(argv=None, *, on_ready=None):
+def main(argv=None, *, on_ready=None, online_socket=None, handle_signals=True):
     parser = argparse.ArgumentParser(description="Start a remote desktop session on this computer.")
     parser.add_argument("--bind", default="127.0.0.1", help="loopback address, or 0.0.0.0/:: for other devices")
     parser.add_argument("--port", type=int, default=8443)
@@ -60,21 +60,35 @@ def main(argv=None, *, on_ready=None):
     from native.desktop import Desktop
 
     token = secrets.token_urlsafe(32)
-    desktop = Desktop()
+    desktop = Desktop(primary_only=online_socket is not None)
     if args.request_control:
         print(desktop.request_control(), flush=True)
-    app = create_app(token, desktop, ice)
+    from .pairings import device_store
+    from native.screen import PrimaryScreen
+    from native.updates import DesktopUpdates, asset_name
+    installer = asset_name() if online_socket is not None else None
+    app = create_app(token, desktop, ice, device_store=device_store() if online_socket is not None else None,
+                     updater=DesktopUpdates(installer) if installer else None,
+                     primary_capture=PrimaryScreen(desktop) if online_socket is not None else None)
     domain = "localhost" if args.bind in {"0.0.0.0", "::", "localhost", "127.0.0.1", "::1"} else args.bind
     if ":" in domain:
         domain = f"[{domain}]"
-    url = f"{'https' if context else 'http'}://{domain}:{args.port}/#host={token}"
+    port = args.port
+    path = "/"
+    listen = {"host": args.bind, "port": port}
+    if online_socket is not None:
+        domain, port = online_socket.getsockname()
+        path = "/online.html"
+        listen = {"sock": online_socket}
+    url = f"{'https' if context else 'http'}://{domain}:{port}{path}#host={token}"
     def announce(banner):
-        print(f"Open on this computer (private host link):\n{url}", flush=True)
-        print(banner, flush=True)
+        if handle_signals:
+            print(f"Open on this computer (private host link):\n{url}", flush=True)
+            print(banner, flush=True)
         if on_ready:
             on_ready(url)
 
-    web.run_app(app, host=args.bind, port=args.port, ssl_context=context, access_log=None, print=announce)
+    web.run_app(app, **listen, ssl_context=context, access_log=None, print=announce, handle_signals=handle_signals)
 
 
 if __name__ == "__main__":

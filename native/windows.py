@@ -1,10 +1,43 @@
-"""Win32 SendInput adapter for a single interactive monitor."""
+"""Win32 capture geometry and SendInput for the interactive desktop."""
 
 import ctypes as ct
 import math
 import sys
+from pathlib import Path
 
 from ctypes import wintypes as wt
+from .monitors import Monitor
+
+
+class MonitorInfo(ct.Structure):
+    _fields_ = [("size", wt.DWORD), ("rect", wt.RECT), ("work", wt.RECT),
+                ("flags", wt.DWORD), ("name", wt.WCHAR * 32)]
+
+
+def windows_monitors():
+    user = ct.WinDLL("user32", use_last_error=True)
+    if hasattr(user, "SetThreadDpiAwarenessContext"):
+        user.SetThreadDpiAwarenessContext.argtypes = [ct.c_void_p]
+        user.SetThreadDpiAwarenessContext.restype = ct.c_void_p
+        user.SetThreadDpiAwarenessContext(ct.c_void_p(-4))
+    callback = ct.WINFUNCTYPE(wt.BOOL, wt.HMONITOR, wt.HDC, ct.POINTER(wt.RECT), wt.LPARAM)
+    user.GetMonitorInfoW.argtypes = [wt.HMONITOR, ct.POINTER(MonitorInfo)]
+    user.EnumDisplayMonitors.argtypes = [wt.HDC, ct.POINTER(wt.RECT), callback, wt.LPARAM]
+    found = []
+
+    @callback
+    def add(handle, _dc, _rect, _data):
+        info = MonitorInfo()
+        info.size = ct.sizeof(info)
+        if user.GetMonitorInfoW(handle, ct.byref(info)):
+            r = info.rect
+            found.append(Monitor(info.name.rsplit("\\", 1)[-1], (r.left, r.top, r.right, r.bottom),
+                                 bool(info.flags & 1)))
+        return True
+
+    if not user.EnumDisplayMonitors(None, None, add, 0):
+        return []
+    return sorted(found, key=lambda monitor: (not monitor.primary, monitor.id))
 
 
 # PC keyboard scan codes. Extended keys have the E0 prefix encoded as bit 8.
@@ -21,7 +54,7 @@ SCAN_CODES = {
     "NumpadEnter": 0x11C, "ControlRight": 0x11D, "NumpadDivide": 0x135, "AltRight": 0x138,
     "Home": 0x147, "ArrowUp": 0x148, "PageUp": 0x149, "ArrowLeft": 0x14B, "ArrowRight": 0x14D,
     "End": 0x14F, "ArrowDown": 0x150, "PageDown": 0x151, "Insert": 0x152, "Delete": 0x153,
-    "MetaLeft": 0x15B, "MetaRight": 0x15C, "ContextMenu": 0x15D,
+    "PrintScreen": 0x137, "MetaLeft": 0x15B, "MetaRight": 0x15C, "ContextMenu": 0x15D,
 }
 for first, row in ((0x10, "QWERTYUIOP"), (0x1E, "ASDFGHJKL"), (0x2C, "ZXCVBNM")):
     SCAN_CODES.update({f"Key{char}": first + index for index, char in enumerate(row)})
@@ -52,7 +85,8 @@ class Input(ct.Structure):
 
 
 class WindowsBackend:
-    def __init__(self):
+    def __init__(self, *, primary_only=False):
+        self.primary_only = primary_only
         from .win_curtain import PrivacyCurtain
 
         self.user = ct.WinDLL("user32", use_last_error=True)
@@ -66,11 +100,16 @@ class WindowsBackend:
         self._keys = set()
         self._buttons = set()
         self._wheel_pixels = [0.0, 0.0]
-        self.privacy_supported = sys.getwindowsversion().build >= 19041
+        self.privacy_supported = sys.getwindowsversion().build >= 19041 and not primary_only
         self._curtain = PrivacyCurtain()
 
+    def editable_focus(self):
+        path = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1] / "build/focus/Release")) / "EditableFocus.dll"
+        if not path.is_file(): return False
+        return bool(ct.WinDLL(str(path)).IsEditableFocus())
+
     def geometry(self):
-        if self.user.GetSystemMetrics(80) != 1:  # SM_CMONITORS
+        if not self.primary_only and self.user.GetSystemMetrics(80) != 1:  # SM_CMONITORS
             raise RuntimeError("遠端控制需要一台啟用的螢幕")
         return self.user.GetSystemMetrics(0), self.user.GetSystemMetrics(1)
 
@@ -113,12 +152,27 @@ class WindowsBackend:
             self._mouse(0x1000 if axis == 0 else 0x0800, notches * (120 if axis == 0 else -120))
         self._wheel_pixels[axis] = total - notches * 48
 
-    def apply(self, event):
+    def apply(self, event, monitor=None):
         kind = event["kind"]
         if kind in ("move", "button", "wheel") and "x" in event:
-            self._mouse(0x8001, x=round(event["x"] * 65535), y=round(event["y"] * 65535))
+            if monitor is None:
+                self._mouse(0x8001, x=round(event["x"] * 65535), y=round(event["y"] * 65535))
+            else:
+                x, y = monitor.position(event["x"], event["y"])
+                left, top, width, height = (self.user.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+                if width <= 0 or height <= 0:
+                    raise RuntimeError("無法讀取 Windows 桌面座標")
+                # SendInput maps each normalized axis into the entire virtual desktop.
+                self._mouse(0xC001, x=min(65535, ((x-left) * 65536 + width-1) // width),
+                            y=min(65535, ((y-top) * 65536 + height-1) // height))
         if kind == "button":
             self._button(event["button"], event["down"])
+        elif kind == "text":
+            raw = event["text"].encode("utf-16-le")
+            for pos in range(0,len(raw),2):
+                unit = int.from_bytes(raw[pos:pos+2],"little")
+                for flags in (4,6):
+                    self._send(Input(1, InputData(keyboard=KeyboardInput(0,unit,flags,0,0))))
         elif kind == "key":
             self._key(event["code"], event["down"])
         elif kind == "wheel":

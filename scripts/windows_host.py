@@ -1,5 +1,6 @@
 """Interactive desktop launcher. The same entry point runs from source or a frozen EXE."""
 import argparse
+import errno
 import ipaddress
 import os
 from pathlib import Path
@@ -60,6 +61,10 @@ def prepare_windows_trust(ca_path):
 
 def open_host(url):
     try:
+        if sys.platform.startswith("linux") and getattr(sys, "frozen", False):
+            from native.linux import open_desktop_file
+            open_desktop_file(url)
+            return
         if webbrowser.open(url, new=2):
             return
     except (OSError, webbrowser.Error):
@@ -67,21 +72,55 @@ def open_host(url):
     print("請在這台電腦的 Chrome 或 Edge 貼上上方的主機連結。", flush=True)
 
 
+def start_online(port, *, on_ready, handle_signals=True):
+    if port is not None and not 0 <= port <= 65535:
+        raise ValueError("本機連接埠必須在 0–65535 之間")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        if sys.platform == "win32":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            listener.bind(("127.0.0.1", 8443 if port is None else port))
+        except OSError as error:
+            # Windows can report WSAEACCES for a reserved or exclusively held port.
+            unavailable = error.errno == errno.EADDRINUSE or getattr(error, "winerror", None) in (10013, 10048)
+            if port is not None or not unavailable:
+                raise
+            listener.bind(("127.0.0.1", 0))
+        run_server([], online_socket=listener, on_ready=on_ready, handle_signals=handle_signals)
+
+
 def main():
     # Redirected output on Windows inherits a legacy code page on some systems.
     for stream in (sys.stdout, sys.stderr):
-        if stream is not None and not stream.isatty():
+        if stream is not None and not stream.isatty() and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-    parser = argparse.ArgumentParser(description="啟動遠端桌面 Windows 主機")
+    parser = argparse.ArgumentParser(description="啟動遠端桌面")
+    parser.add_argument("--lan", action="store_true", help="使用區域網路與自訂憑證模式")
     parser.add_argument("--address", type=ipaddress.IPv4Address, help="這台電腦的 LAN IPv4")
-    parser.add_argument("--port", type=int, default=8443)
-    data_home = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    parser.add_argument("--state-dir", type=Path, default=data_home / "RemoteControlHost" / "identities")
+    parser.add_argument("--port", type=int, help="指定連接埠；跨網路模式可填 0 讓系統分配")
+    from server.pairings import device_store
+    parser.add_argument("--state-dir", type=Path, default=device_store().parent / "identities")
     parser.add_argument("--no-browser", action="store_true", help="僅在主控台顯示連結與公開憑證位置")
+    parser.add_argument("--background", action="store_true", help="Windows 登入時在通知區域啟動")
+    parser.add_argument("--exit", action="store_true", help="結束目前的 Windows 遠端待命")
     args = parser.parse_args()
+    if not args.lan and args.address is None:
+        if sys.platform == "win32" and not args.no_browser:
+            from native.windows_app import run, show_message
+            try:
+                run(start_online, args.port, background=args.background, exit_only=args.exit)
+            except (OSError, ValueError, RuntimeError, ImportError) as error:
+                if args.exit:
+                    print(error, file=sys.stderr)
+                else:
+                    show_message(error)
+                return 1
+            return 0
+        start_online(args.port, on_ready=None if args.no_browser else open_host)
+        return 0
     print("將手機或平板連上與這台電腦相同的區網。", flush=True)
     address = args.address or select_address()
-    ca_path, server_args = lan_server_args(address, args.port, args.state_dir)
+    ca_path, server_args = lan_server_args(address, 8443 if args.port is None else args.port, args.state_dir)
     print("三星平板首次連線時，將上方的 trusted-root.crt 傳到平板，在設定中搜尋「安裝憑證」並安裝為 CA 憑證。")
     print("只需傳送 trusted-root.crt 這個公開檔案。請以主機顯示的 SHA-256 指紋核對憑證。")
     print("主機請使用 Chrome 或 Edge，在主機頁面按「選擇畫面並開始分享」，再逐一核准觀看者。")

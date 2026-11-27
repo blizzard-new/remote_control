@@ -1,11 +1,24 @@
 """Quartz input for one macOS display. All positions use global display points."""
 
 import ctypes as ct
+from functools import lru_cache
+from pathlib import Path
+import sys
 from math import trunc
 from time import monotonic
 
 
-ACCESS_HINT = "請在 Mac 的「系統設定 → 隱私權與安全性 → 輔助使用」允許啟動主機的終端機或 Python，然後重新啟動主機。也可使用 --request-control 顯示系統授權提示。"
+ACCESS_HINT = "macOS 尚未讓這個 RemoteControl 程序傳送鍵鼠事件。若「輔助使用」已開，請在進階設定核對執行路徑並重新開啟程式。"
+RELAUNCH_HINT = "macOS 已認可這個程序的輔助使用權限，但尚未開放傳送鍵鼠事件。請在進階設定重新開啟 RemoteControl 後再連線。"
+
+
+def running_app():
+    executable = Path(sys.executable).resolve()
+    if getattr(sys, "frozen", False) and executable.parent.name == "MacOS":
+        bundle = executable.parent.parent.parent
+        if bundle.suffix == ".app" and bundle.is_dir():
+            return bundle
+    return None
 
 # Physical DOM positions mapped to the virtual key codes in Carbon Events.h.
 # The current Mac input source determines the resulting characters.
@@ -62,21 +75,58 @@ def _bind(lib, name, result, *arguments):
     return function
 
 
+@lru_cache(maxsize=1)
+def display_bridge():
+    path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1] / "build")) / "libRemoteControlDisplay.dylib"
+    if not path.is_file() and not getattr(sys, "frozen", False):
+        return None
+    library = ct.CDLL(str(path))
+    _bind(library, "rc_capture_jpeg_for_profile", ct.c_int32, ct.c_int32, ct.c_int32,
+          ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
+    _bind(library, "rc_free_image", None, ct.c_void_p)
+    _bind(library, "rc_focused_editable", ct.c_int32)
+    return library
+
+
+def capture_jpeg(library, edge=1920, sharp=False, display=0):
+    data, length = ct.c_void_p(), ct.c_ssize_t()
+    if display:
+        capture = _bind(library, "rc_capture_display_jpeg", ct.c_int32, ct.c_uint32, ct.c_int32, ct.c_int32,
+                        ct.POINTER(ct.c_void_p), ct.POINTER(ct.c_ssize_t))
+        status = capture(display, edge, int(sharp), ct.byref(data), ct.byref(length))
+    else:
+        status = library.rc_capture_jpeg_for_profile(edge, int(sharp), ct.byref(data), ct.byref(length))
+    try:
+        if status == 1:
+            raise PermissionError("macOS 拒絕這個 RemoteControl 程序錄製螢幕。若系統開關已開，請從進階設定重新開啟程式。")
+        if status or not data.value or not 0 < length.value <= 16 * 1024 * 1024:
+            raise RuntimeError("Mac 暫時無法取得主螢幕影像。請確認螢幕已喚醒，再重新連線。")
+        return ct.string_at(data, length.value)
+    finally:
+        if data.value:
+            library.rc_free_image(data)
+
+
 class Quartz:
     def __init__(self):
         cg = ct.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         cf = ct.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        ax = ct.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
         ref, uint, sint = ct.c_void_p, ct.c_uint32, ct.c_int32
         self._release = _bind(cf, "CFRelease", None, ref)
         self.has_access = _bind(cg, "CGPreflightPostEventAccess", ct.c_bool)
+        self.accessibility_trusted = _bind(ax, "AXIsProcessTrusted", ct.c_bool)
+        self.screen_allowed = _bind(cg, "CGPreflightScreenCaptureAccess", ct.c_bool)
         self.request_access = _bind(cg, "CGRequestPostEventAccess", ct.c_bool)
         self._displays = _bind(cg, "CGGetActiveDisplayList", sint, uint, ct.POINTER(uint), ct.POINTER(uint))
+        self._main = _bind(cg, "CGMainDisplayID", uint)
         self._bounds = _bind(cg, "CGDisplayBounds", Rect, uint)
         self._create = _bind(cg, "CGEventCreate", ref, ref)
         self._location = _bind(cg, "CGEventGetLocation", Point, ref)
         self._set_location = _bind(cg, "CGEventSetLocation", None, ref, Point)
         self._mouse = _bind(cg, "CGEventCreateMouseEvent", ref, ref, uint, Point, uint)
         self._key = _bind(cg, "CGEventCreateKeyboardEvent", ref, ref, ct.c_uint16, ct.c_bool)
+        self._unicode = _bind(cg, "CGEventKeyboardSetUnicodeString", None, ref, ct.c_ulong, ct.POINTER(ct.c_uint16))
         # The non-variadic API uses the same ABI on Intel and Apple Silicon.
         self._wheel = _bind(cg, "CGEventCreateScrollWheelEvent2", ref, ref, uint, uint, sint, sint, sint)
         self._field = _bind(cg, "CGEventSetIntegerValueField", None, ref, uint, ct.c_int64)
@@ -84,11 +134,26 @@ class Quartz:
         self._set_flags = _bind(cg, "CGEventSetFlags", None, ref, ct.c_uint64)
         self._post = _bind(cg, "CGEventPost", None, uint, ref)
 
-    def bounds(self):
+    def monitors(self):
+        from .monitors import Monitor
+        displays, count = (ct.c_uint32 * 32)(), ct.c_uint32()
+        if self._displays(len(displays), displays, ct.byref(count)):
+            return []
+        main = self._main()
+        result = []
+        for identifier in displays[:count.value]:
+            rect = self._bounds(identifier)
+            left, top = int(rect.origin.x), int(rect.origin.y)
+            size = int(rect.size.width), int(rect.size.height)
+            if min(size) > 0:
+                result.append(Monitor(str(identifier), (left, top, left + size[0], top + size[1]), identifier == main))
+        return sorted(result, key=lambda monitor: (not monitor.primary, monitor.id))
+
+    def bounds(self, primary=False):
         displays, count = (ct.c_uint32 * 2)(), ct.c_uint32()
-        if self._displays(2, displays, ct.byref(count)) or count.value != 1:
+        if not primary and (self._displays(2, displays, ct.byref(count)) or count.value != 1):
             raise RuntimeError("Mac 的遠端操作需要單一啟用中的顯示器。")
-        rect = self._bounds(displays[0])
+        rect = self._bounds(self._main() if primary else displays[0])
         if rect.size.width < 1 or rect.size.height < 1:
             raise RuntimeError("無法讀取 Mac 顯示器的尺寸。")
         return rect.origin.x, rect.origin.y, int(rect.size.width), int(rect.size.height)
@@ -124,6 +189,17 @@ class Quartz:
         event = self._key(None, keycode, down)
         self._emit(event, flags, clear=clear, fields=((8, int(repeat)),))  # kCGKeyboardEventAutorepeat
 
+    def text(self, value):
+        # Keep supplementary characters together at Quartz's event boundary.
+        for char in value:
+            raw = char.encode("utf-16-le")
+            units = (ct.c_uint16 * (len(raw)//2)).from_buffer_copy(raw)
+            for down in (True,False):
+                event = self._key(None,0,down)
+                if not event: raise RuntimeError("無法建立文字輸入事件。")
+                self._unicode(event,len(units),units)
+                self._emit(event,0)
+
     def scroll(self, dx, dy, position, flags):
         # Pixel units, wheel 1 vertical / wheel 2 horizontal. Quartz positive
         # means up/left, while DOM positive scrolls the content down/right.
@@ -133,22 +209,36 @@ class Quartz:
 class MacBackend:
     privacy_supported = False
 
-    def __init__(self, quartz=None):
+    def __init__(self, quartz=None, *, primary_only=False):
+        self.primary_only = primary_only
         self.quartz = quartz if quartz is not None else Quartz()
         self._keys = set()
         self._buttons = {}
         self._clicks = {}
         self._wheel_pixels = [0.0, 0.0]
+        self._requested = False
+
+    def permissions(self):
+        app = running_app()
+        return {"application": str(app or Path(sys.executable).resolve()), "relaunch": bool(app),
+                "accessibility": bool(self.quartz.accessibility_trusted()),
+                "postEvents": bool(self.quartz.has_access()), "screen": bool(self.quartz.screen_allowed())}
 
     def request_control(self):
-        if self.quartz.has_access() or self.quartz.request_access():
+        if self.quartz.has_access():
             return "Mac 已允許此主機傳送鍵鼠輸入。"
+        if self.quartz.accessibility_trusted():
+            return RELAUNCH_HINT
+        if not self._requested:
+            self._requested = True
+            if self.quartz.request_access():
+                return "Mac 已允許此主機傳送鍵鼠輸入。"
         return ACCESS_HINT
 
     def geometry(self):
         if not self.quartz.has_access():
-            raise RuntimeError(ACCESS_HINT)
-        self._display = self.quartz.bounds()
+            raise PermissionError(RELAUNCH_HINT if self.quartz.accessibility_trusted() else ACCESS_HINT)
+        self._display = self.quartz.bounds(primary=True) if self.primary_only else self.quartz.bounds()
         return self._display[2:]
 
     def _flags(self, keys):
@@ -157,9 +247,11 @@ class MacBackend:
             flags |= MODIFIERS.get(key, 0)
         return flags
 
-    def _position(self, event):
+    def _position(self, event, monitor=None):
         if "x" not in event:
             return self.quartz.cursor()
+        if monitor is not None:
+            return monitor.position(event["x"], event["y"])
         x, y, width, height = self._display
         return x + event["x"] * (width - 1), y + event["y"] * (height - 1)
 
@@ -187,22 +279,28 @@ class MacBackend:
             self.quartz.mouse(release, position, cg_button, self._flags(self._keys), self._buttons[button])
             del self._buttons[button]
 
-    def apply(self, event):
+    def editable_focus(self):
+        bridge = display_bridge()
+        return bool(bridge and bridge.rc_focused_editable())
+
+    def apply(self, event, monitor=None):
         kind = event["kind"]
-        if kind == "key":
+        if kind == "text":
+            self.quartz.text(event["text"])
+        elif kind == "key":
             self._key(event["code"], event["down"])
         elif kind == "button":
-            self._button(event["button"], event["down"], self._position(event))
+            self._button(event["button"], event["down"], self._position(event, monitor))
         elif kind == "move":
             held = next(reversed(self._buttons), None)
             button, event_type = (0, 5) if held is None else (BUTTONS[held][0], BUTTONS[held][3])
-            self.quartz.mouse(event_type, self._position(event), button, self._flags(self._keys),
+            self.quartz.mouse(event_type, self._position(event, monitor), button, self._flags(self._keys),
                               self._buttons.get(held, 0))
         elif kind == "wheel":
             total = [self._wheel_pixels[0] + event["dx"], self._wheel_pixels[1] + event["dy"]]
             dx, dy = (trunc(pixels) for pixels in total)
             if dx or dy:
-                self.quartz.scroll(dx, dy, self._position(event), self._flags(self._keys))
+                self.quartz.scroll(dx, dy, self._position(event, monitor), self._flags(self._keys))
             self._wheel_pixels[:] = [total[0] - dx, total[1] - dy]
 
     def release_all(self):

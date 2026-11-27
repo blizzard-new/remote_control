@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-15, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,26 +34,89 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb libxtst6 libxrandr2 x11-xkb-utils
       - if: runner.os == 'Windows'
-        run: python -m pip install windows-capture==2.0.1
+        run: python -m pip install windows-capture==2.0.1 pywebview==5.4 pystray==0.19.5
       - run: python -m unittest discover -s tests -v
         env:
           REMOTE_TEST_WINDOWS_CURTAIN: ${{ runner.os == 'Windows' && '1' || '0' }}
-      - run: node --test tests/input.test.mjs android/tests/avc-player.test.mjs
+      - run: node --test tests/input.test.mjs tests/pairing.test.mjs tests/video.test.mjs android/tests/avc-player.test.mjs
       - if: runner.os == 'Linux'
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps chromium
           python -m unittest discover -s tests -p browser_smoke.py -v
+          python -m unittest discover -s tests -p browser_phone_screen.py -v
+      - if: runner.os == 'Windows'
+        name: Check relay installer syntax
+        shell: pwsh
+        run: |
+          $syntaxErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'deploy/Install-Relay.ps1'), [ref]$null, [ref]$syntaxErrors)
+          if ($syntaxErrors) { throw ($syntaxErrors -join [Environment]::NewLine) }
       - if: runner.os == 'Windows'
         run: |
+          cmake -S packaging/focus -B build/focus -A x64
+          cmake --build build/focus --config Release
           python -m pip install "pyinstaller>=6.12,<7"
           python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
           python packaging/smoke_windows.py dist/RemoteControlHost.exe
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging/RemoteControl.iss
+      - if: runner.os == 'Windows'
+        name: Check Windows close and background relaunch
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pip install playwright
+          python -m playwright install chromium
+          python packaging/smoke_windows_background.py dist/RemoteControlHost.exe
+      - if: runner.os == 'Windows'
+        name: Verify the installed Windows version after upgrading
+        shell: pwsh
+        run: ./packaging/smoke_windows_setup.ps1 dist/RemoteControl-Setup-Windows-x64.exe 0.5.10
       - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: Windows-desktop-host
-          path: dist/RemoteControlHost.exe
+          path: |
+            dist/RemoteControlHost.exe
+            dist/RemoteControl-Setup-Windows-x64.exe
+          if-no-files-found: error
+
+      - if: runner.os == 'Linux'
+        name: Package and verify the Linux client
+        run: |
+          python -m pip install "pyinstaller>=6.12,<7"
+          python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
+          bash packaging/linux/build-deb.sh
+          sudo apt-get install -y ./dist/RemoteControl-Linux-amd64.deb
+          python packaging/smoke_windows.py /usr/bin/uniway-remote
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Linux-desktop-host
+          path: dist/RemoteControl-Linux-amd64.deb
+          if-no-files-found: error
+
+      - if: runner.os == 'macOS'
+        name: Package and verify the Mac app
+        run: |
+          mkdir -p build
+          swiftc -emit-library -O -parse-as-library -target "$(uname -m)-apple-macos12.3" packaging/PrimaryDisplay.swift -o build/libRemoteControlDisplay.dylib
+          python -m pip install "pyinstaller>=6.12,<7"
+          python -m PyInstaller --clean --noconfirm packaging/RemoteControlHost.spec
+          python packaging/smoke_windows.py dist/RemoteControl.app/Contents/MacOS/RemoteControl
+          python -c "import ctypes; lib=ctypes.CDLL('dist/RemoteControl.app/Contents/Frameworks/libRemoteControlDisplay.dylib'); assert lib.rc_capture_jpeg_for_profile and lib.rc_capture_jpeg and lib.rc_free_image and lib.rc_focused_editable"
+          codesign --verify --deep --strict dist/RemoteControl.app
+          pkgbuild --component dist/RemoteControl.app --install-location /Applications --identifier org.remotecontrol.desktop --version 0.5.10 "RemoteControl-macOS-$(uname -m).pkg"
+          ditto -c -k --keepParent dist/RemoteControl.app "RemoteControl-macOS-$(uname -m).zip"
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mac-host-${{ matrix.os }}
+          path: |
+            RemoteControl-macOS-*.zip
+            RemoteControl-macOS-*.pkg
           if-no-files-found: error
 
   android:
@@ -90,4 +153,51 @@ jobs:
           disable-animations: true
           script: |
             adb shell svc wifi enable
+            adb shell svc data disable
+            timeout 30 bash -c 'until adb shell ip -4 addr show dev wlan0 | grep -q "inet "; do sleep 1; done'
+            adb shell wm size 800x1280
             bash android/tests/run-projection-test.sh
+            adb exec-out run-as org.remotecontrol.share cat cache/verified-phone-screen.jpg > "$GITHUB_WORKSPACE/verified-phone-screen.jpg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-projected-test-screen
+          path: verified-phone-screen.jpg
+          if-no-files-found: error
+      - name: Verify sharing and the dashboard on Android 15
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb shell wm size 800x1280
+            bash android/tests/run-projection-test.sh org.remotecontrol.share.DashboardTest,org.remotecontrol.share.PhoneCodeTest
+
+  phone-viewer:
+    name: Control Android and verify video on ${{ matrix.desktop }}
+    needs: android
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15-intel, desktop: Darwin, browser: webkit }
+          - { os: windows-latest, desktop: Windows, browser: chromium }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-projected-test-screen
+          path: build/phone-fixture
+      - run: python -m pip install -r requirements.txt playwright
+      - run: python -m playwright install ${{ matrix.browser }}
+      - run: python -m unittest discover -s tests -p browser_phone_screen.py -v
+        env:
+          REMOTE_BROWSER: ${{ matrix.browser }}
+          REMOTE_DESKTOP_PLATFORM: ${{ matrix.desktop }}
+          REMOTE_ANDROID_FRAME: build/phone-fixture/verified-phone-screen.jpg

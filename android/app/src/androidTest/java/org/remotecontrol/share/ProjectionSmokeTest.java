@@ -67,6 +67,9 @@ public final class ProjectionSmokeTest {
             String previous = null;
             for (boolean avc : new boolean[]{false, true}) {
                 showHost();
+                if (!device.hasObject(By.clazz("android.widget.Switch"))) visible(By.text("進階連線設定")).click();
+                UiObject2 internet = visible(By.clazz("android.widget.Switch"));
+                if (internet.isChecked()) internet.click();
                 UiObject2 quality = visible(By.clazz("android.widget.CheckBox"));
                 if (quality.isChecked() != avc) quality.click();
                 visible(By.text("選擇分享畫面")).click();
@@ -130,7 +133,7 @@ public final class ProjectionSmokeTest {
     }
 
     private void showHost() {
-        Intent show = new Intent(context, ShareActivity.class)
+        Intent show = new Intent(context, ShareHostActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
         context.startActivity(show);
         device.waitForIdle();

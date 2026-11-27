@@ -4,6 +4,9 @@ from contextlib import AsyncExitStack
 import json
 import os
 import secrets
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import socket
 import unittest
 
 from aiohttp.test_utils import TestServer
@@ -20,10 +23,12 @@ class RecordingDesktop:
     privacy_enabled = False
 
     def __init__(self):
+        self.events = asyncio.Queue()
         self.wheel = asyncio.Queue()
         self.released = asyncio.Event()
 
     def apply(self, event):
+        self.events.put_nowait(event)
         if event["kind"] == "wheel":
             self.wheel.put_nowait(event)
 
@@ -182,3 +187,255 @@ class BrowserSmoke(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await observer.locator("#screen").evaluate("v => v.srcObject === null"))
             self.assertEqual(await host.evaluate("window.testCapture.readyState"), "ended")
             await expect(host.locator("#count")).to_have_text("0")
+
+
+class InternetRelaySmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_two_apps_use_only_outbound_relay_for_approved_screen_and_input(self):
+        from relay.__main__ import create_app as relay_app
+        desktop = RecordingDesktop()
+        secret = secrets.token_urlsafe(32)
+        state = TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        host_db, viewer_db = (Path(state.name) / n for n in ("host.db","viewer.db"))
+        from io import BytesIO
+        from PIL import Image
+
+        class Display:
+            def __init__(self):
+                self.frames = 0
+                with BytesIO() as out:
+                    Image.new("RGB", (320,180), (16,200,80)).save(out, format="JPEG")
+                    self.jpeg = out.getvalue()
+            async def frame(self, *, edge, sharp):
+                self.frames += 1
+                if getattr(self, "denied", False):
+                    raise RuntimeError("請允許螢幕錄製。")
+                return self.jpeg
+            async def stop(self): pass
+
+        screen = Display()
+        desktop.capabilities = {**desktop.capabilities, "keyboard": True}
+        desktop.editable_focus = lambda: True
+        other = RecordingDesktop()
+        async with TestServer(relay_app()) as relay, TestServer(create_app(secret, desktop, device_store=host_db, primary_capture=screen)) as sharing, \
+                TestServer(create_app("viewer-only", other, device_store=viewer_db, primary_capture=Display())) as viewing, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None,
+                args=["--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
+            try:
+                host = await browser.new_page()
+                viewer = await browser.new_page(viewport={"width": 400, "height": 800}, is_mobile=True, has_touch=True)
+                address = json.dumps(str(relay.make_url("/")).rstrip("/"))
+                for page in (host, viewer):
+                    await page.add_init_script("localStorage.setItem('rc-relay'," + address + ")")
+
+                # Simulate a pair of networks where no direct media path is possible.
+                await host.add_init_script("window.RTCPeerConnection = undefined")
+                await viewer.add_init_script("window.RTCPeerConnection = undefined")
+                await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
+                await expect(host.locator("#invitation")).to_be_visible()
+                invite = await host.locator("#invite").input_value()
+                self.assertRegex(invite, r"^[0-9]{4}$")
+                await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await expect(viewer.locator("#self-name")).to_have_text(socket.gethostname()[:48])
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#device-count")).to_have_text("0")
+                await expect(viewer.locator("#remembered button")).to_have_count(0)
+                await viewer.locator("nav [data-page=settings]").click()
+                await viewer.locator("#name").fill("測試平板")
+                await viewer.locator("nav [data-page=connect]").click()
+                await viewer.locator("#code").fill(invite)
+                # The fourth digit submits the pairing request.
+                await expect(host.get_by_role("button", name="允許操作")).to_be_visible()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                await expect(host.locator("#remembered button")).to_have_count(0)
+                self.assertEqual(screen.frames, 0)
+                await host.get_by_role("button", name="允許操作").click()
+                await viewer.wait_for_function("""() => {const c=document.querySelector('#picture');
+                    return c.width===320 && c.getContext('2d').getImageData(160,90,1,1).data[1]>155}""")
+                await expect(host.locator("#connected-count")).to_have_text("1")
+                await expect(host.locator("#connected-list")).to_contain_text("測試平板")
+                box = await viewer.locator("#picture").bounding_box()
+                self.assertEqual((box["width"],box["height"]), (400,800))
+                await viewer.keyboard.press("a")
+                key = await asyncio.wait_for(desktop.events.get(),5)
+                self.assertEqual((key["kind"],key["code"],key["down"]),("key","KeyA",True))
+                await desktop.events.get()
+                await viewer.touchscreen.tap(300,400)
+                tap = await asyncio.wait_for(desktop.events.get(),5)
+                self.assertEqual((tap["kind"], tap["down"]), ("button",True))
+                self.assertAlmostEqual(tap["x"], 0.75, places=2)
+                self.assertAlmostEqual(tap["y"], 0.5, places=2)
+                await expect(viewer.locator("#ime")).to_be_focused()
+                await viewer.keyboard.insert_text("你好")
+                while True:
+                    received = await asyncio.wait_for(desktop.events.get(),5)
+                    if received["kind"] == "text": break
+                self.assertEqual(received["text"],"你好")
+                await viewer.keyboard.press("Escape")
+                await viewer.locator("#video-menu summary").click()
+                await viewer.locator("#quality").select_option("1280")
+                await viewer.locator("#fps").select_option("60")
+                await viewer.locator("#video-menu summary").click()
+                await viewer.locator("#picture").evaluate("""c=>{
+                    const r=c.getBoundingClientRect();
+                    c.dispatchEvent(new WheelEvent('wheel',{cancelable:true,clientX:r.left+r.width/2,
+                      clientY:r.top+r.height/2,deltaY:1.25,deltaX:-0.5}));}""")
+                event = await asyncio.wait_for(desktop.wheel.get(), timeout=5)
+                self.assertEqual((event["dx"],event["dy"]),(-0.5,1.25))
+                await host.locator("#stop").click()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await asyncio.wait_for(desktop.released.wait(),timeout=5)
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                await expect(viewer.locator("#device-count")).to_have_text("1")
+                # Reproduce a capture permission failure after a pair has already been saved.
+                await host.locator("#start").click()
+                await expect(host.locator("#invitation")).to_be_visible()
+                screen.denied = True
+                await viewer.locator("nav [data-page=devices]").click()
+                await viewer.locator("#remembered button").first.click()
+                await viewer.locator("#action-connect").click()
+                await expect(host.locator("#message")).to_contain_text("螢幕錄製")
+                await expect(viewer.locator("#message")).to_contain_text("擷取")
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                await expect(host.locator("#invitation")).to_be_visible()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                screen.denied = False
+                # Reopening the Mac while the old host still holds the saved room can reject
+                # its first registration. Keep the PIN listener and recover the saved route.
+                await host.add_init_script("""{
+                  const Original = WebSocket;
+                  window.WebSocket = class extends Original {
+                    send(data) {
+                      if (!window.interrupted && this.url.endsWith('/v1/session') && typeof data === 'string') {
+                        const m = JSON.parse(data);
+                        if (m.role === 'host' && m.nonce) {
+                          window.interrupted = true;
+                          return this.close();
+                        }
+                      }
+                      return super.send(data);
+                    }
+                  };
+                }""")
+                # Start a fresh session after reloading both dashboards and reconnect by name.
+                await host.goto("about:blank")
+                await host.goto(str(sharing.make_url("/online.html")) + "#host=" + secret)
+                await viewer.goto("about:blank")
+                await viewer.goto(str(viewing.make_url("/online.html"))+"#host=viewer-only")
+                await expect(host.locator("#invitation")).to_be_visible()
+                await expect(viewer.locator("#code")).to_have_value("")
+                await viewer.locator("#remembered button").first.click()
+                await viewer.locator("#action-connect").click()
+                await expect(host.get_by_role("button",name="中斷連線")).to_be_visible(timeout=20000)
+                await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
+                await expect(host.locator("#status")).to_contain_text("遠端操作中")
+                await expect(viewer.locator("#stage")).to_be_visible()
+                # Retyping today's PIN must recover the original grant, even after a
+                # restart. Temporarily unavailable macOS input must not prompt again.
+                await viewer.locator("#leave").click()
+                await expect(host.locator("#connected-count")).to_have_text("0")
+                desktop.capabilities = {**desktop.capabilities, "control": False, "controlHint": "請開啟輔助使用"}
+                await viewer.locator("#add").click()
+                await viewer.locator("#code").fill(await host.locator("#invite").input_value())
+                await expect(host.get_by_text("請開啟輔助使用", exact=True)).to_be_visible()
+                await expect(host.get_by_role("button",name="允許觀看")).to_have_count(0)
+                await expect(host.get_by_role("button",name="允許操作")).to_have_count(0)
+                desktop.capabilities["control"] = True
+                await expect(viewer.locator("#stage")).to_be_visible(timeout=10000)
+                await expect(viewer.locator("#view-mode")).to_be_hidden()
+                await expect(host.locator("#device-count")).to_have_text("1")
+                await expect(viewer.locator("#device-count")).to_have_text("1")
+                await host.locator("#stop").click()
+                await expect(viewer.locator("#stage")).to_be_hidden()
+                # The same pairing also works in reverse without entering a new PIN.
+                await viewer.goto("about:blank")
+                await viewer.goto(str(viewing.make_url("/online.html")) + "#host=viewer-only")
+                await viewer.locator("#self").click()
+                await expect(viewer.locator("#invitation")).to_be_visible()
+                await host.locator("#remembered button").first.click()
+                await host.locator("#action-connect").click()
+                await viewer.get_by_role("button",name="允許觀看").click()
+                await expect(host.locator("#stage")).to_be_visible()
+                await expect(host.locator("#view-mode")).to_be_visible()
+                await host.locator("#leave").click()
+                await expect(viewer.locator("#connected-count")).to_have_text("0")
+                other.capabilities = {**other.capabilities, "control": False, "controlHint": "請允許輔助使用"}
+                await host.locator("#action-connect").click()
+                await expect(viewer.get_by_text("請允許輔助使用", exact=True)).to_be_visible()
+                await expect(viewer.get_by_role("button",name="允許操作")).to_have_count(0)
+                await expect(host.locator("#stage")).to_be_hidden()
+                other.capabilities["control"] = True
+                await viewer.get_by_role("button",name="重新檢查操作權限").click()
+                await viewer.get_by_role("button",name="允許操作").click()
+                await expect(host.locator("#stage")).to_be_visible()
+                await expect(host.locator("#view-mode")).to_be_hidden()
+                await host.wait_for_function("document.querySelector('#picture').getContext('2d').getImageData(160,90,1,1).data[1] > 155")
+                await host.keyboard.press("b")
+                key = await asyncio.wait_for(other.events.get(), 5)
+                self.assertEqual((key["kind"],key["code"]), ("key","KeyB"))
+
+            finally:
+                await browser.close()
+
+
+class PhoneDirectorySmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_two_legacy_records_do_not_make_two_connected_computers(self):
+        async with TestServer(create_app("host", RecordingDesktop())) as site, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None)
+            try:
+                page = await browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True)
+                await page.add_init_script("""window.PhoneDevices = {
+                    name: () => 'SM-S9280',
+                    sessionState: () => JSON.stringify({peers: [], lan: -1, listening: false}),
+                    update: () => JSON.stringify(['A','B'].map(id => ({
+                      listen:id.repeat(32), dial:id.toLowerCase().repeat(32), address:'https://relay.example',
+                      name:'我的電腦', grant:''}))) };""")
+                await page.goto(str(site.make_url("/online.html")))
+                await expect(page.locator("#self-name")).to_have_text("SM-S9280")
+                await expect(page.locator("#connected-count")).to_have_text("0")
+                await expect(page.locator("#status")).to_have_text("未連線")
+                await expect(page.locator("#device-count")).to_have_text("2")
+                await expect(page.locator("#remembered button")).to_have_count(0)
+                await expect(page.get_by_text("我的電腦", exact=True)).to_have_count(0)
+                await expect(page.locator("#legacy-list")).to_be_hidden()
+                await page.locator("#legacy summary").click()
+                await expect(page.locator("#legacy-list button")).to_have_count(2)
+                await page.locator("#legacy-list button").first.click()
+                await expect(page.locator("#device-title")).to_have_text("未命名的配對紀錄 1")
+                await page.evaluate("""() => {PhoneDevices.sessionState = () => JSON.stringify({
+                    peers: [{name:'書房電腦', control:true}], lan:-1, listening:true}); refreshDashboard();}""")
+                await expect(page.locator("#connected-count")).to_have_text("1")
+                await expect(page.locator("#connected-list")).to_contain_text("書房電腦")
+            finally:
+                await browser.close()
+
+
+class UpdateScreenSmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_launch_checks_then_user_starts_install_from_desktop(self):
+        class Updater:
+            def __init__(self):
+                self.calls = []
+            async def run(self, action, busy):
+                self.calls.append(action)
+                if action == "install":
+                    return {"installing": True}
+                return {"current":"0.4.0", "latest":"0.5.0", "available":True}
+        updater = Updater()
+        async with TestServer(create_app("test-console", RecordingDesktop(), updater=updater)) as server, async_playwright() as pw:
+            browser = await pw.chromium.launch(executable_path=os.environ.get("CHROMIUM_EXECUTABLE") or None)
+            try:
+                page = await browser.new_page()
+                await page.goto(str(server.make_url("/online.html")) + "#host=test-console")
+                await page.locator("nav [data-page=settings]").click()
+                await expect(page.locator("#update-status")).to_contain_text("0.5.0")
+                await page.get_by_role("button", name="檢查更新").click()
+                await expect(page.locator("#update-status")).to_contain_text("0.5.0")
+                await page.get_by_role("button",name="立即更新").click()
+                await expect(page.locator("#update-status")).to_contain_text("已開啟安裝程式")
+                self.assertEqual(updater.calls,["check","check","install"])
+                response = await page.request.post(str(server.make_url("/api/update")),data={"action":"install"})
+                self.assertEqual(response.status,403)
+            finally:
+                await browser.close()

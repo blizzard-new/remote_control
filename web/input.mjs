@@ -1,10 +1,12 @@
 // Matches the visible picture in a centered video with object-fit: contain.
 export function pictureBounds(video) {
   const rect = video.getBoundingClientRect();
-  if (!(video.videoWidth > 0 && video.videoHeight > 0 && rect.width > 0 && rect.height > 0)) return null;
-  const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
-  const width = video.videoWidth * scale;
-  const height = video.videoHeight * scale;
+  const sourceWidth = video.videoWidth ?? video.width;
+  const sourceHeight = video.videoHeight ?? video.height;
+  if (!(sourceWidth > 0 && sourceHeight > 0 && rect.width > 0 && rect.height > 0)) return null;
+  const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
   return { left: rect.left + (rect.width - width) / 2, top: rect.top + (rect.height - height) / 2, width, height };
 }
 
@@ -24,7 +26,7 @@ export function wheelPixels(event, bounds, lineHeight = 16) {
   return Number.isFinite(dx) && Number.isFinite(dy) ? { dx, dy } : null;
 }
 
-export function attachInput(video, send) {
+export function attachInput(video, send, {detectText = false} = {}) {
   const doc = video.ownerDocument;
   const win = doc.defaultView;
   const cleanup = new AbortController();
@@ -73,8 +75,9 @@ export function attachInput(video, send) {
     mouseButtons = mask;
   }
 
-  function touchButton(down, point) {
-    send({ kind: 'button', button: 0, down, ...point });
+  let serial = 0;
+  function touchButton(down, point, tap = false) {
+    send({ ...(tap && detectText ? {tap:++serial} : {}), kind: 'button', button: 0, down, ...point });
   }
 
   video.addEventListener('pointerdown', event => {
@@ -142,7 +145,7 @@ export function attachInput(video, send) {
         if (dragging) touchButton(false, point);
         else if (position(event)) {
           touchButton(true, point);
-          touchButton(false, point);
+          touchButton(false, point, true);
         }
       }
       if (!touches.size) {

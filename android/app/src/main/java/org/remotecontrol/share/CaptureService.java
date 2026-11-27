@@ -41,9 +41,15 @@ public final class CaptureService extends Service {
     static final class Status {
         final boolean running;
         final String text;
-        Status(boolean running, String text) { this.running = running; this.text = text; }
+        final int lanViewers;
+        Status(boolean running, String text) { this(running, text, -1); }
+        Status(boolean running, String text, int lanViewers) {
+            this.running = running;
+            this.text = text;
+            this.lanViewers = lanViewers;
+        }
     }
-    static volatile Status status = new Status(false, "讓同一個 Wi-Fi 或私人 VPN 上的電腦看見你的畫面。每次分享都會產生新的配對碼。");
+    static volatile Status status = new Status(false, "讓電腦連到這台手機，或用手機操作另一台電腦。");
     private static final String CHANNEL = "screen-share";
     private static final String STOP = "stop-share";
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -56,12 +62,17 @@ public final class CaptureService extends Service {
     private AvcEncoder encoder;
     private int encodedSourceWidth, encodedSourceHeight;
     private ScreenServer server;
+    static volatile PhoneShare online;
+    private PhoneShare internet;
+    private String internetAddress;
     private ConnectivityManager.NetworkCallback networkCallback;
     private Bitmap bitmap;
     private ByteBuffer packed;
     private final ByteArrayOutputStream jpeg = new ByteArrayOutputStream();
     private boolean scheduled;
     private long lastFrame;
+    private boolean captured;
+    private int rawWidth, rawHeight, codecProfile, failedProfile;
     private volatile boolean destroyed;
     private String endReason = "分享已停止，所有連線已關閉。";
 
@@ -88,7 +99,7 @@ public final class CaptureService extends Service {
         PendingIntent stop = PendingIntent.getService(this, 1,
                 new Intent(this, CaptureService.class).setAction(STOP), PendingIntent.FLAG_IMMUTABLE);
         PendingIntent open = PendingIntent.getActivity(this, 2,
-                new Intent(this, ShareActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                new Intent(this, ShareHostActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification notification = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("正在分享 Android 螢幕")
                 .setContentText("按此查看配對資訊或結束分享。").setContentIntent(open)
@@ -101,8 +112,15 @@ public final class CaptureService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        highQuality = intent.getBooleanExtra("highQuality", false);
+        internetAddress = intent.getStringExtra("internet");
+        highQuality = internetAddress == null && intent.getBooleanExtra("highQuality", false);
         status = new Status(true, "正在建立加密連線…");
+        if (internetAddress != null) {
+            try {
+                internet = PhoneShare.takeForCapture(this, internetAddress);
+                online = internet;
+            } catch (Exception e) { stopWith("無法開放手機連線：" + reason(e)); return START_NOT_STICKY; }
+        }
         worker.post(() -> {
             try { begin(consent); }
             catch (Exception error) { stopWith("無法開始分享：" + reason(error)); }
@@ -117,6 +135,27 @@ public final class CaptureService extends Service {
 
     private void begin(Intent consent) throws Exception {
         if (destroyed) return;
+        if (internetAddress != null) {
+            beginProjection(consent);
+            internet.startSharing();
+            worker.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (destroyed) return;
+                    if (rawWidth > 0) changeSize(rawWidth, rawHeight);
+                    if (encoder == null && captured && internet.viewers() > 0 && SystemClock.uptimeMillis() - lastFrame >= 500)
+                        internet.publish(bitmap, jpeg, worker);
+                    worker.postDelayed(this, 500);
+                }
+            },500);
+            main.post(new Runnable() {
+                @Override public void run() {
+                    if (destroyed) return;
+                    status = new Status(true, internet.status());
+                    main.postDelayed(this, 500);
+                }
+            });
+            return;
+        }
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
         Network network = connectivity.getActiveNetwork();
         NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
@@ -149,11 +188,7 @@ public final class CaptureService extends Service {
         String invitation = "請從同一個 " + transport + " 的電腦開啟\n" + server.url() + "\n\n在瀏覽器的憑證資訊中核對 SHA-256 指紋，再繼續：\n"
                 + identity.fingerprint() + "\n\n配對碼\n" + server.code()
                 + "\n\n配對後請切換到要展示的畫面。此頁面受到保護，觀看者會看到黑畫面。";
-        projection = getSystemService(MediaProjectionManager.class).getMediaProjection(Activity.RESULT_OK, consent);
-        if (projection == null) throw new IllegalStateException("系統拒絕擷取螢幕。");
-        projection.registerCallback(projectionCallback, worker);
-        DisplayMetrics metrics = screenMetrics();
-        resize(metrics.widthPixels, metrics.heightPixels);
+        beginProjection(consent);
         invitation += highQuality ? "\n\nH.264 模式 · 目標 30 fps" : "\n\n相容模式 · MJPEG";
         String sessionInfo = invitation;
         server.start(() -> stopWith("無法接受新的觀看者，分享已停止。"));
@@ -161,10 +196,19 @@ public final class CaptureService extends Service {
         main.post(new Runnable() {
             @Override public void run() {
                 if (destroyed) return;
-                status = new Status(true, sessionInfo + "\n\n目前觀看裝置：" + active.viewers());
+                int count = active.viewers();
+                status = new Status(true, sessionInfo + "\n\n目前觀看裝置：" + count, count);
                 main.postDelayed(this, 1_000);
             }
         });
+    }
+
+    private void beginProjection(Intent consent) {
+        projection = getSystemService(MediaProjectionManager.class).getMediaProjection(Activity.RESULT_OK, consent);
+        if (projection == null) throw new IllegalStateException("系統拒絕擷取螢幕。");
+        projection.registerCallback(projectionCallback, worker);
+        DisplayMetrics metrics = screenMetrics(this);
+        resize(metrics.widthPixels, metrics.heightPixels);
     }
 
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
@@ -178,8 +222,8 @@ public final class CaptureService extends Service {
         catch (RuntimeException error) { stopWith("無法調整擷取範圍：" + reason(error)); }
     }
 
-    private DisplayMetrics screenMetrics() {
-        Display screen = getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
+    static DisplayMetrics screenMetrics(android.content.Context context) {
+        Display screen = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
         DisplayMetrics metrics = new DisplayMetrics();
         screen.getRealMetrics(metrics);
         return metrics;
@@ -188,7 +232,7 @@ public final class CaptureService extends Service {
     @Override public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
         if (Build.VERSION.SDK_INT < 34) worker.post(() -> {
-            DisplayMetrics metrics = screenMetrics();
+            DisplayMetrics metrics = screenMetrics(this);
             changeSize(metrics.widthPixels, metrics.heightPixels);
         });
     }
@@ -216,6 +260,33 @@ public final class CaptureService extends Service {
 
     private void resize(int sourceWidth, int sourceHeight) {
         if (sourceWidth <= 0 || sourceHeight <= 0) return;
+        rawWidth = sourceWidth; rawHeight = sourceHeight;
+        if (internet != null) {
+            PhoneControl.captureSize(sourceWidth,sourceHeight);
+            int wanted=internet.codecProfile();
+            if (wanted==failedProfile) wanted=0;
+            if (encoder!=null && wanted==codecProfile && encodedSourceWidth==sourceWidth && encodedSourceHeight==sourceHeight) return;
+            if (encoder!=null) { display.setSurface(null); encoder.close(); encoder=null; }
+            codecProfile=0;
+            if (wanted>0) {
+                final int selected=wanted;
+                try {
+                    encoder=AvcEncoder.open(sourceWidth,sourceHeight,worker,internet::video,
+                        error -> worker.post(() -> { if (codecProfile==selected && !destroyed) {failedProfile=selected; changeSize(rawWidth,rawHeight);} }),
+                        (wanted & ~VideoQuality.SHARP_BIT) / 100, (wanted & ~VideoQuality.SHARP_BIT) % 100,
+                        (wanted & VideoQuality.SHARP_BIT) != 0);
+                    int dpi=Math.max(1,Math.round(getResources().getDisplayMetrics().densityDpi * encoder.width/(float)sourceWidth));
+                    attachSurface(encoder.width,encoder.height,dpi,encoder.surface);
+                    if (reader!=null) {reader.close();reader=null;}
+                    if (bitmap!=null) {bitmap.recycle();bitmap=null;packed=null;}
+                    captured=false; codecProfile=wanted; encodedSourceWidth=sourceWidth; encodedSourceHeight=sourceHeight;
+                    return;
+                } catch (RuntimeException unavailable) {
+                    if (encoder!=null) {encoder.close();encoder=null;}
+                    failedProfile=wanted;
+                }
+            }
+        }
         if (highQuality) {
             if (encoder != null && sourceWidth == encodedSourceWidth && sourceHeight == encodedSourceHeight) return;
             if (encoder != null) {
@@ -232,7 +303,10 @@ public final class CaptureService extends Service {
             encodedSourceHeight = sourceHeight;
             return;
         }
-        double scale = Math.min(1, 1280d / Math.max(sourceWidth, sourceHeight));
+        // A static app may not redraw after Android replaces the projection surface.
+        // Keep one full-detail capture and encode the latest pixels at each viewer's size.
+        int edge = internet == null ? 1280 : VideoQuality.MAX_EDGE;
+        double scale = Math.min(1, edge / (double)Math.max(sourceWidth, sourceHeight));
         int w = Math.max(1, (int) Math.round(sourceWidth * scale));
         int h = Math.max(1, (int) Math.round(sourceHeight * scale));
         if (reader != null && reader.getWidth() == w && reader.getHeight() == h) return;
@@ -243,7 +317,7 @@ public final class CaptureService extends Service {
             if (current == reader && !scheduled && !destroyed) {
                 scheduled = true;
                 // Acquire the newest frame at the deadline, keeping memory and slow clients bounded.
-                long period = server.viewers() > 0 ? 84 : 500;
+                long period = internet == null ? (server.viewers() > 0 ? 84 : 500) : (internet.fps() == 60 ? 16 : internet.fps() == 30 ? 33 : 500);
                 worker.postAtTime(this::encodeFrame, Math.max(SystemClock.uptimeMillis(), lastFrame + period));
             }
         }, worker);
@@ -253,6 +327,7 @@ public final class CaptureService extends Service {
             if (previous != null) previous.close();
         }
         if (bitmap != null) bitmap.recycle();
+        captured = false;
         bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         packed = ByteBuffer.allocateDirect(w * h * 4);
     }
@@ -277,6 +352,8 @@ public final class CaptureService extends Service {
             }
             packed.flip();
             bitmap.copyPixelsFromBuffer(packed);
+            captured = true;
+            if (internet != null) { internet.publish(bitmap, jpeg, worker); return; }
             jpeg.reset();
             if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 76, jpeg)) throw new IllegalStateException("JPEG 編碼失敗。");
             server.publish(jpeg.toByteArray());
@@ -286,6 +363,7 @@ public final class CaptureService extends Service {
     }
 
     private void stopWith(String message) {
+        PhoneControl.releaseAll();PhoneControl.captureSize(0,0);
         main.post(() -> {
             if (destroyed) return;
             endReason = message;
@@ -295,9 +373,12 @@ public final class CaptureService extends Service {
 
     @Override public void onDestroy() {
         destroyed = true;
+        PhoneControl.releaseAll(); PhoneControl.captureSize(0,0);
         status = new Status(false, endReason);
+        if (online == internet) online = null;
         main.removeCallbacksAndMessages(null);
         worker.postAtFrontOfQueue(() -> {
+            if (internet != null) internet.close();
             if (server != null) server.close();
             if (display != null) display.release();
             if (encoder != null) encoder.close();

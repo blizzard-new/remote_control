@@ -19,24 +19,33 @@ final class AvcEncoder implements AutoCloseable {
     private boolean closed;
     private byte[] config = new byte[0];
 
+    interface Output { void publish(long timeUs, boolean key, byte[] data); }
+
     static AvcEncoder open(int sourceWidth, int sourceHeight, Handler handler, AvcFrames frames,
                            Consumer<String> failed) {
+        return open(sourceWidth, sourceHeight, handler, frames::publish, failed, 1920, 30, false);
+    }
+    static AvcEncoder open(int sourceWidth, int sourceHeight, Handler handler, Output frames,
+                           Consumer<String> failed, int edge, int fps, boolean sharp) {
         MediaCodecList codecs = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
         RuntimeException last = null;
-        for (int shortEdge : new int[]{1080, 720, 540}) {
-            double scale = Math.min(1d, Math.min(shortEdge / (double) Math.min(sourceWidth, sourceHeight),
-                    (shortEdge * 16d / 9d) / Math.max(sourceWidth, sourceHeight)));
+        for (int candidate : new int[]{3840, 2560, 1920, 1280, 960}) {
+            if (candidate > edge) continue;
+            // Keep native text detail through JPEG if hardware cannot encode this size.
+            if (sharp && candidate < Math.min(edge, Math.max(sourceWidth, sourceHeight))) break;
+            double scale = Math.min(1d, candidate / (double)Math.max(sourceWidth, sourceHeight));
             int w = dimension(sourceWidth * scale);
             int h = dimension(sourceHeight * scale);
             MediaFormat format = MediaFormat.createVideoFormat("video/avc", w, h);
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
-            format.setInteger(MediaFormat.KEY_BIT_RATE, Math.max(1_000_000, w * h * 4));
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, Math.max(1_000_000,
+                    Math.min(24_000_000, Math.round(w * (float) h * fps * (sharp ? 0.24f : 0.115f)))));
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
             // Refresh even a stationary desktop so new viewers can acquire a keyframe.
             format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 250_000);
             if (Build.VERSION.SDK_INT >= 29) {
-                format.setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, 30f);
+                format.setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, (float)fps);
                 format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
             }
             String name = preferredEncoder(codecs, format);
@@ -70,7 +79,7 @@ final class AvcEncoder implements AutoCloseable {
     }
 
     private AvcEncoder(String name, MediaFormat format, int w, int h, Handler handler,
-                       AvcFrames frames, Consumer<String> failed) throws IOException {
+                       Output frames, Consumer<String> failed) throws IOException {
         width = w;
         height = h;
         codec = MediaCodec.createByCodecName(name);

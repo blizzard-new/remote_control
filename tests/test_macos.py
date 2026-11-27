@@ -1,18 +1,54 @@
 import ctypes as ct
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+from aiohttp.test_utils import TestClient, TestServer
 
 from native.desktop import Desktop
-from native.macos import ACCESS_HINT, MacBackend, Point, Quartz, Rect, _bind
+from native.macos import ACCESS_HINT, RELAUNCH_HINT, MacBackend, Point, Quartz, Rect, _bind, capture_jpeg
+from server.app import create_app
+
+
+class MacPermissionEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_the_local_owner_can_inspect_or_request_access(self):
+        desktop = Mock()
+        report = {"application": "/Applications/RemoteControl.app", "accessibility": True, "postEvents": False}
+        desktop.mac_permissions.return_value = report
+        with patch("server.app.platform.system", return_value="Darwin"):
+            app = create_app("owner", desktop, primary_capture=Mock())
+        async with TestClient(TestServer(app)) as client:
+            origin = str(client.make_url("/").origin())
+            for caller, token in [(origin, "wrong"), ("https://other.invalid", "owner")]:
+                response = await client.post("/api/mac-permissions", json={"action": "request"},
+                                             headers={"Origin": caller, "X-Host-Token": token})
+                self.assertEqual(response.status, 403)
+            owner = {"Origin": origin, "X-Host-Token": "owner"}
+            response = await client.post("/api/mac-permissions", json={"action": "check"}, headers=owner)
+            self.assertEqual(await response.json(), report)
+            desktop.request_control.assert_not_called()
+            response = await client.post("/api/mac-permissions", json={"action": "request"}, headers=owner)
+            self.assertEqual(response.status, 200)
+            desktop.request_control.assert_called_once_with()
 
 
 class MacInputTests(unittest.TestCase):
+    def test_only_screen_capture_permission_denials_get_an_authorization_hint(self):
+        library = Mock()
+        for status, error in [(1, PermissionError), (2, RuntimeError), (0, RuntimeError)]:
+            with self.subTest(status=status):
+                library.rc_capture_jpeg_for_profile.return_value = status
+                with self.assertRaises(error):
+                    capture_jpeg(library)
+        library.rc_free_image.assert_not_called()
+
     def setUp(self):
         self.quartz = Mock(spec=Quartz)
         # Permission checks are dynamically bound system functions.
         self.quartz.has_access = Mock(return_value=True)
         self.quartz.request_access = Mock(return_value=False)
+        self.quartz.accessibility_trusted = Mock(return_value=False)
+        self.quartz.screen_allowed = Mock(return_value=True)
         self.quartz.bounds.return_value = (0, 0, 1512, 982)  # Retina logical points
         self.quartz.cursor.return_value = (755.5, 490.5)
         self.host = Desktop.__new__(Desktop)
@@ -25,10 +61,25 @@ class MacInputTests(unittest.TestCase):
         self.quartz.request_access.assert_not_called()
         self.assertEqual(self.host.request_control(), ACCESS_HINT)
         self.quartz.request_access.assert_called_once_with()
+        self.host.request_control()
+        self.quartz.request_access.assert_called_once_with()
         self.quartz.has_access.return_value = True
         self.assertTrue(self.host.capabilities["control"])
         self.assertFalse(self.host.capabilities["privacy"])
         self.assertNotIn("controlHint", self.host.capabilities)
+
+    def test_enabled_accessibility_with_stale_event_access_identifies_the_running_process(self):
+        self.quartz.accessibility_trusted.return_value = True
+        self.quartz.has_access.return_value = False
+        self.assertEqual(self.host.capabilities["controlReason"], "access")
+        self.assertEqual(self.host.request_control(), RELAUNCH_HINT)
+        report = self.host.mac_permissions()
+        self.assertTrue(report["accessibility"])
+        self.assertFalse(report["postEvents"])
+        self.assertTrue(report["application"])
+        self.quartz.request_access.assert_not_called()
+        self.quartz.has_access.return_value = True
+        self.assertTrue(self.host.capabilities["control"])
 
     def test_right_button_drag_uses_quartz_points(self):
         self.host.apply({"kind": "button", "x": 0, "y": 0.5, "button": 2, "down": True})
@@ -79,6 +130,7 @@ class MacInputTests(unittest.TestCase):
     def test_installed_framework_constructs_events_without_posting(self):
         quartz = Quartz()
         self.assertIsInstance(quartz.has_access(), bool)
+        self.assertIsInstance(quartz.accessibility_trusted(), bool)
         self.assertEqual((ct.sizeof(Point), ct.sizeof(Rect)), (16, 32))
         cg = ct.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         event_type = _bind(cg, "CGEventGetType", ct.c_uint32, ct.c_void_p)
