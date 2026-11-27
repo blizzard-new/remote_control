@@ -243,7 +243,7 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                 picture = phone.locator("#picture")
                 await expect(button).to_have_text("螢幕 1 / 2")
                 await phone.wait_for_function("() => document.querySelector('#picture').width === 640")
-                for width, height in [(1280, 720), (360, 640), (800, 360), (640, 240)]:
+                for width, height in [(1280, 720), (360, 640), (320, 460), (800, 360), (640, 240)]:
                     await phone.set_viewport_size({"width": width, "height": height})
                     await phone.locator("#video-menu summary").click()
                     panel = await phone.locator(".video-options").bounding_box()
@@ -256,6 +256,13 @@ class PhoneScreenSmoke(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(await phone.evaluate(
                         "() => document.elementFromPoint(innerWidth-15, 15).id === 'picture'"))
                     await phone.locator("#video-menu summary").click()
+                    self.assertTrue(await phone.evaluate("""async () => {
+                        const {pictureBounds} = await import('/input.mjs');
+                        const canvas = document.querySelector('#picture');
+                        const r = pictureBounds(canvas);
+                        return [4, 22, 48].every(offset =>
+                            document.elementFromPoint(r.left + r.width - offset, r.top + 8) === canvas);
+                    }"""))
                 await phone.set_viewport_size({"width": 360, "height": 420})
                 await phone.locator("#video-menu summary").click()
                 await phone.locator("#view-scale").select_option("native")

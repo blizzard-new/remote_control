@@ -15,7 +15,7 @@ import {
   resumeAnswer,
 } from "./pairing.mjs";
 import { devices } from "./devices.mjs";
-import { attachInput } from "./input.mjs";
+import { attachInput, pictureBounds } from "./input.mjs";
 import { DEFAULT_RELAY, Relay, parseInvite } from "./relay.mjs";
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.hash.slice(1));
@@ -1393,6 +1393,12 @@ function receiveVideo(s, p, bytes) {
 const viewport = $("screen-viewport");
 const navigatorButton = $("pan-view");
 function updateNavigator() {
+  // In portrait, a landscape desktop's title bar may be halfway down the phone.
+  const bounds = pictureBounds(canvas);
+  const rail = document.querySelector(".viewer-bar");
+  const titleBottom = bounds && bounds.left + bounds.width > rail.getBoundingClientRect().left
+    ? Math.ceil(bounds.top + Math.max(16, 48 * bounds.width / canvas.width)) : 0;
+  rail.style.setProperty("--remote-title-bottom", titleBottom + "px");
   const { clientWidth: w, clientHeight: h, scrollWidth: fullW, scrollHeight: fullH } = viewport;
   navigatorButton.hidden = !viewport.classList.contains("native") || !w || !h ||
     (fullW <= w && fullH <= h);
